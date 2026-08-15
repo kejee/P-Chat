@@ -1,0 +1,26 @@
+{
+  "name": "p-chat",
+  "version": "1.0.0",
+  "description": "Zero-Knowledge End-to-End Encrypted Ephemeral Web Messenger",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "e2ee",
+    "encryption",
+    "zero-knowledge",
+    "ephemeral-chat",
+    "burn-after-reading",
+    "privacy",
+    "websocket"
+  ],
+  "author": "P-Chat Contributors",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P-Chat | 零知识端到端加密私密群组</title>
+  <meta name="description" content="基于 Web Crypto API 的端到端加密私密即时通讯群组，支持阅后即焚、房间自毁与零知识盲中继。">
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+  <!-- Anti-Peek Privacy Shield Overlay -->
+  <div id="privacyShield" class="privacy-blur-overlay">
+    <i data-lucide="shield-alert" style="width: 48px; height: 48px;"></i>
+    <h2>防窥保护已激活</h2>
+    <p style="color: var(--text-secondary); font-size: 0.9rem;">检测到窗口失焦或隐私保护触发，点击屏幕任意位置恢复显示</p>
+  </div>
+
+  <!-- Global Navigation Header -->
+  <header class="app-header">
+    <div class="logo-area" onclick="app.showLobby()">
+      <div class="logo-icon">
+        <i data-lucide="lock" style="width: 18px; height: 18px;"></i>
+      </div>
+      <span>P-Chat</span>
+      <span class="brand-badge">E2EE 256-BIT</span>
+    </div>
+
+    <div class="header-actions">
+      <div class="status-pill" id="ipBadge" title="您的当前访问 IP">
+        <i data-lucide="globe" style="width: 14px; height: 14px;"></i>
+        <span id="clientIpText">IP: 检测中...</span>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot" id="wsStatusDot"></span>
+        <span id="wsStatusText">连接中...</span>
+      </div>
+      <button class="btn btn-outline btn-sm" id="btnAdminModal" style="display: none;" onclick="app.openAdminModal()">
+        <i data-lucide="shield-check" style="width: 14px; height: 14px; color: var(--accent-purple);"></i>
+        管理面板
+      </button>
+      <button class="btn btn-outline btn-sm" id="btnLeaveRoom" style="display: none;" onclick="app.leaveRoom()">
+        <i data-lucide="log-out" style="width: 14px; height: 14px;"></i>
+        退出群组
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-wrapper">
+
+    <!-- VIEW 1: LOBBY -->
+    <section id="lobbyView" class="view-section active">
+      
+      <!-- Top Grid: Join By Pass & Create Room -->
+      <div class="lobby-grid">
+        
+        <!-- Direct Join Card -->
+        <div class="glass-card">
+          <div class="card-title">
+            <i data-lucide="key-round" style="color: var(--accent-cyan);"></i>
+            口令直达加入
+          </div>
+          <div class="card-desc">无需知道群组名称，直接输入专属强口令，本地瞬间派生解密密钥并进入私密频道。</div>
+          
+          <div class="form-group">
+            <label class="form-label">群组专属口令</label>
+            <input type="password" id="joinPasswordInput" class="input-box mono" placeholder="输入口令 (如 x89#K29a...)" autocomplete="off">
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">您的昵称 (可选)</label>
+            <input type="text" id="joinAliasInput" class="input-box" placeholder="随机分配或自定义代号" maxlength="20">
+          </div>
+
+          <button class="btn btn-cyan" style="width: 100%;" onclick="app.joinByPassword()">
+            <i data-lucide="arrow-right"></i> 解密并进入群组
+          </button>
+        </div>
+
+        <!-- Create Room Card -->
+        <div class="glass-card">
+          <div class="card-title">
+            <i data-lucide="plus-circle" style="color: var(--accent-green);"></i>
+            创建私密群组
+          </div>
+          <div class="card-desc">创建者自动成为管理员。系统已为您预置高熵随机强口令与端到端加密策略。</div>
+
+          <div class="form-group">
+            <label class="form-label">群组名称</label>
+            <input type="text" id="createNameInput" class="input-box" placeholder="例如: 极客安全小组 #01" maxlength="28">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">群组口令 (留空则无口令，无口令必须设为公开)</label>
+            <div class="input-with-btn">
+              <input type="text" id="createPasswordInput" class="input-box mono" placeholder="点击右侧生成强口令">
+              <button class="btn btn-outline" type="button" onclick="app.generateNewPass()" title="重新随机生成">
+                <i data-lucide="refresh-cw" style="width: 14px; height: 14px;"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span class="toggle-title">公开展示于群组大厅</span>
+              <span class="toggle-desc">关闭后大厅完全隐形，只有凭口令者可直达</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="createIsPublic" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">群组生命周期 (自动销毁时长)</label>
+            <select id="createDestroyDuration" class="input-box">
+              <option value="15">15 分钟后彻底销毁</option>
+              <option value="60" selected>1 小时后彻底销毁</option>
+              <option value="360">6 小时后彻底销毁</option>
+              <option value="1440">24 小时后彻底销毁</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">IP 白名单限制 (可选，以逗号分隔)</label>
+            <input type="text" id="createAllowedIps" class="input-box mono" placeholder="例如: 127.0.0.1, 192.168.1.* (留空不限制)">
+          </div>
+
+          <button class="btn btn-primary" style="width: 100%; margin-top: 8px;" onclick="app.createRoom()">
+            <i data-lucide="shield"></i> 创建并启动安全频道
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Public Rooms List -->
+      <div class="room-list-header">
+        <div class="room-list-title">
+          <i data-lucide="layers" style="color: var(--accent-cyan);"></i>
+          公开可见群组大厅
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="app.fetchPublicRooms()">
+          <i data-lucide="rotate-cw" style="width: 12px; height: 12px;"></i> 刷新列表
+        </button>
+      </div>
+
+      <div class="room-grid" id="publicRoomsGrid">
+        <!-- Dynamic Rooms Rendered Here -->
+        <div class="room-card" style="text-align: center; color: var(--text-muted); grid-column: 1 / -1; padding: 40px;">
+          正在检索开放群组...
+        </div>
+      </div>
+
+    </section>
+
+    <!-- VIEW 2: CHAT ROOM -->
+    <section id="chatView" class="view-section">
+      <div class="chat-container">
+        
+        <!-- Left Sidebar: Online Members -->
+        <div class="chat-sidebar">
+          <div class="sidebar-title">
+            在线成员 (<span id="memberCountBadge">1</span>)
+          </div>
+          <ul class="member-list" id="memberListUl">
+            <!-- Member items -->
+          </ul>
+          <div style="margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border-color); font-size: 0.72rem; color: var(--text-muted);">
+            <i data-lucide="cpu" style="width: 12px; height: 12px; vertical-align: middle;"></i> 纯内存通信 · 零落盘
+          </div>
+        </div>
+
+        <!-- Right Main Chat -->
+        <div class="chat-main">
+          
+          <!-- Top Bar -->
+          <div class="chat-topbar">
+            <div class="chat-room-info">
+              <span class="room-title-text" id="activeRoomName">未命名群组</span>
+              <span class="badge badge-locked" id="roomSecurityBadge">E2EE 加密</span>
+              <div class="countdown-tag" id="roomDestroyCountdown" title="房间销毁倒计时">
+                <i data-lucide="flame" style="width: 12px; height: 12px;"></i>
+                <span id="countdownTimerText">--:--</span>
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-outline btn-sm" id="btnCopyPass" onclick="app.copyCurrentPass()" title="复制房间口令">
+                <i data-lucide="copy" style="width: 12px; height: 12px;"></i> 复制口令
+              </button>
+            </div>
+          </div>
+
+          <!-- Message Stream -->
+          <div class="message-stream" id="messageStream">
+            <!-- Messages inserted dynamically -->
+          </div>
+
+          <!-- Chat Bottom Bar -->
+          <div class="chat-bottombar">
+            
+            <!-- Burn Options Strip -->
+            <div class="burn-options-strip">
+              <div class="burn-selector-group">
+                <input type="checkbox" id="enableBurnCheck" onchange="app.toggleBurnControls()">
+                <label for="enableBurnCheck" style="cursor: pointer; font-weight: 600; color: var(--accent-red); display: flex; align-items: center; gap: 4px;">
+                  <i data-lucide="flame" style="width: 14px; height: 14px;"></i> 启用阅后即焚
+                </label>
+              </div>
+
+              <div id="burnConfigContainer" style="display: none; gap: 10px; align-items: center;">
+                <label style="font-size: 0.75rem;">模式:</label>
+                <select id="burnTypeSelect" class="select-box" onchange="app.onBurnTypeChange()">
+                  <option value="timer">倒计时自焚 (秒)</option>
+                  <option value="views">阅读人数自焚 (限次)</option>
+                </select>
+
+                <div id="burnTimerInputGroup" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <select id="burnTimerSecSelect" class="select-box">
+                    <option value="5">5 秒后销毁</option>
+                    <option value="10" selected>10 秒后销毁</option>
+                    <option value="30">30 秒后销毁</option>
+                    <option value="60">60 秒后销毁</option>
+                  </select>
+                </div>
+
+                <div id="burnViewsInputGroup" style="display: none; align-items: center; gap: 4px;">
+                  <select id="burnMaxViewsSelect" class="select-box">
+                    <option value="1">仅限 1 人查看</option>
+                    <option value="2">限 2 人查看</option>
+                    <option value="3">限 3 人查看</option>
+                    <option value="5">限 5 人查看</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Input Row -->
+            <div class="chat-input-row">
+              <input type="text" id="chatMsgInput" class="input-box" placeholder="输入端到端加密消息... (Enter 发送)" autocomplete="off">
+              <button class="btn btn-primary" id="btnSendMsg" onclick="app.sendMessage()">
+                <i data-lucide="send" style="width: 14px; height: 14px;"></i> 发送
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODAL 1: Admin Management Modal -->
+  <div class="modal-overlay" id="adminModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="card-title">
+          <i data-lucide="sliders" style="color: var(--accent-purple);"></i>
+          管理员安全控制台
+        </div>
+        <button class="modal-close" onclick="app.closeAdminModal()">&times;</button>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">修改/设置群组口令 (留空表示关闭口令)</label>
+        <div class="input-with-btn">
+          <input type="text" id="adminPasswordInput" class="input-box mono" placeholder="输入新口令或留空清除">
+          <button class="btn btn-outline" type="button" onclick="app.generateAdminPass()">
+            <i data-lucide="refresh-cw" style="width: 14px; height: 14px;"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-label">
+          <span class="toggle-title">群组在大厅可见性</span>
+          <span class="toggle-desc">注：若无口令，必须保持公开可见</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="adminIsPublic">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">更新 IP 白名单 (以逗号分隔)</label>
+        <input type="text" id="adminAllowedIps" class="input-box mono" placeholder="例如: 127.0.0.1, 10.0.0.*">
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-primary" style="flex: 1;" onclick="app.submitAdminUpdate()">
+          保存安全配置
+        </button>
+        <button class="btn btn-danger" onclick="app.panicDestroyRoom()">
+          <i data-lucide="flame"></i> 紧急核按钮自毁
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Password Prompt for Public Room -->
+  <div class="modal-overlay" id="passwordPromptModal">
+    <div class="modal-box" style="max-width: 400px;">
+      <div class="modal-header">
+        <div class="card-title">
+          <i data-lucide="lock" style="color: var(--accent-yellow);"></i>
+          输入群组口令
+        </div>
+        <button class="modal-close" onclick="app.closePasswordPrompt()">&times;</button>
+      </div>
+      
+      <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+        该群组设置了端到端加密口令保护，请输入口令派生密钥：
+      </p>
+
+      <div class="form-group">
+        <input type="password" id="promptPassInput" class="input-box mono" placeholder="输入口令">
+      </div>
+
+      <button class="btn btn-primary" style="width: 100%;" onclick="app.confirmJoinPromptedRoom()">
+        验证并进入
+      </button>
+    </div>
+  </div>
+
+  <!-- Application Scripts -->
+  <script src="js/crypto.js"></script>
+  <script src="js/socket.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>

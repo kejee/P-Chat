@@ -1,0 +1,22 @@
+services:
+  p-chat:
+    image: ghcr.io/${GITHUB_REPOSITORY:-p-chat/p-chat}:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: p-chat
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - RATE_LIMIT_MAX=30
+      - RATE_LIMIT_WINDOW_MS=60000
+    # Run in memory without disk persistence for maximum privacy
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

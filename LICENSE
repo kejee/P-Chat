@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 P-Chat Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### DISCLAIMER & SECURITY NOTICE / 免责声明与安全公约
+
+1. **用途限制 (Intended Use)**:
+   本软件旨在为学术研究、网络安全实验及合法合规的私密即时通讯提供技术探索。任何个人或组织不得利用本系统从事任何违反当地法律法规的活动（包括但不限于传播非法信息、诈骗、侵犯他人合法权益等）。
+   
+2. **端到端加密与密钥责任 (E2EE & Key Responsibility)**:
+   本系统采用客户端本地端到端加密（E2EE）与零知识盲中继架构。服务器不保存任何通信明文或加解密密钥。如果用户遗失、遗忘或泄露群组口令，由此产生的任何数据不可恢复或被他人截获风险由使用者自行承担。
+
+3. **阅后即焚与客户端防护限制 (Burn-After-Reading Limitations)**:
+   虽然本系统在浏览器层级提供了防止窥探、超时自动焚毁与内存擦除机制，但无法从物理底层阻止接收方使用外部摄像设备拍照、物理硬件级屏幕录制或恶意修改过的客户端代码进行的旁路截留。使用者在发送高度机密信息时仍需审慎评估接收方的可信度。
+
+4. **免责保证 (No Warranty)**:
+   开发者团队不对因使用、无法使用或依赖本系统所造成的任何直接、间接、附带或惩罚性损害承担任何法律或经济责任。
