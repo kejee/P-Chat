@@ -48,6 +48,12 @@
     </div>
   </header>
 
+  <!-- HTTPS / Secure Context Warning Banner (Only shown if user is on non-secure LAN IP) -->
+  <div id="httpsWarningBanner" style="display: none; background: rgba(255, 184, 0, 0.15); border-bottom: 1px solid rgba(255, 184, 0, 0.4); padding: 8px 16px; font-size: 0.8rem; color: var(--accent-yellow); text-align: center;">
+    <i data-lucide="alert-triangle" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;"></i>
+    提示：当前处于非安全 HTTP 局域网访问，现代移动端浏览器限制了底层加密。上线生产环境请开启 <strong>HTTPS</strong> 或通过 <strong>Localhost</strong> 体验完整端到端加密。
+  </div>
+
   <!-- Main Container -->
   <main class="main-wrapper">
 
@@ -178,18 +184,32 @@
           
           <!-- Top Bar -->
           <div class="chat-topbar">
-            <div class="chat-room-info">
-              <span class="room-title-text" id="activeRoomName">未命名群组</span>
-              <span class="badge badge-locked" id="roomSecurityBadge">E2EE 加密</span>
-              <div class="countdown-tag" id="roomDestroyCountdown" title="房间销毁倒计时">
-                <i data-lucide="flame" style="width: 12px; height: 12px;"></i>
-                <span id="countdownTimerText">--:--</span>
+            <div class="chat-topbar-left">
+              <button class="btn btn-outline btn-sm btn-icon-only mobile-only" onclick="app.showLobby()" title="返回大厅">
+                <i data-lucide="chevron-left" style="width: 18px; height: 18px;"></i>
+              </button>
+              <div class="chat-room-info">
+                <span class="room-title-text" id="activeRoomName">未命名群组</span>
+                <span class="badge badge-locked" id="roomSecurityBadge">E2EE 加密</span>
+                <div class="countdown-tag" id="roomDestroyCountdown" title="房间销毁倒计时">
+                  <i data-lucide="flame" style="width: 12px; height: 12px;"></i>
+                  <span id="countdownTimerText">--:--</span>
+                </div>
               </div>
             </div>
             
-            <div style="display: flex; gap: 8px;">
+            <div class="chat-topbar-actions">
+              <button class="btn btn-outline btn-sm mobile-only btn-icon-only" id="btnMobileMembers" onclick="app.openMobileMembers()" title="在线成员">
+                <i data-lucide="users" style="width: 15px; height: 15px; color: var(--accent-green);"></i>
+              </button>
+              <button class="btn btn-outline btn-sm mobile-only btn-icon-only" id="btnMobileAdmin" style="display: none;" onclick="app.openAdminModal()" title="管理员面板">
+                <i data-lucide="shield-check" style="width: 15px; height: 15px; color: var(--accent-purple);"></i>
+              </button>
               <button class="btn btn-outline btn-sm" id="btnCopyPass" onclick="app.copyCurrentPass()" title="复制房间口令">
-                <i data-lucide="copy" style="width: 12px; height: 12px;"></i> 复制口令
+                <i data-lucide="copy" style="width: 13px; height: 13px;"></i> <span class="desktop-text">复制口令</span>
+              </button>
+              <button class="btn btn-outline btn-sm mobile-only btn-icon-only" onclick="app.leaveRoom()" title="退出群组">
+                <i data-lucide="log-out" style="width: 15px; height: 15px; color: var(--accent-red);"></i>
               </button>
             </div>
           </div>
@@ -238,10 +258,37 @@
               </div>
             </div>
 
+            <!-- Upload / Encrypting Progress Bar -->
+            <div id="uploadProgressBarContainer" style="display: none; padding: 6px 12px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: var(--radius-sm); margin-bottom: 4px;">
+              <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--accent-cyan); margin-bottom: 4px;">
+                <span id="uploadProgressStatusText">
+                  <i data-lucide="loader-2" class="spin-anim" style="width: 12px; height: 12px; vertical-align: middle;"></i> 正在进行端到端加密...
+                </span>
+                <span id="uploadProgressPercentText" style="font-family: var(--font-mono); font-weight: 700;">0%</span>
+              </div>
+              <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                <div id="uploadProgressBarFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green)); transition: width 0.15s ease;"></div>
+              </div>
+            </div>
+
+            <!-- Attachment Preview Area (When file/image is selected/pasted) -->
+            <div id="attachmentPreviewBar" style="display: none; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(0, 229, 255, 0.08); border: 1px dashed var(--accent-cyan); border-radius: var(--radius-sm);">
+              <div id="attachmentPreviewThumb" style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-primary);">
+                <!-- Dynamic preview (image thumbnail or file icon) -->
+              </div>
+              <button class="btn btn-outline btn-sm" style="margin-left: auto; padding: 2px 8px; font-size: 0.7rem;" onclick="app.clearAttachment()" title="移除附件">
+                <i data-lucide="x" style="width: 12px; height: 12px;"></i> 移除
+              </button>
+            </div>
+
             <!-- Input Row -->
             <div class="chat-input-row">
-              <input type="text" id="chatMsgInput" class="input-box" placeholder="输入端到端加密消息... (Enter 发送)" autocomplete="off">
-              <button class="btn btn-primary" id="btnSendMsg" onclick="app.sendMessage()">
+              <input type="file" id="filePickerInput" style="display: none;" onchange="app.handleFileSelect(event)">
+              <button class="btn btn-outline" type="button" onclick="document.getElementById('filePickerInput').click()" title="发送文件/图片/视频 (端到端加密)">
+                <i data-lucide="paperclip" style="width: 16px; height: 16px; color: var(--accent-cyan);"></i>
+              </button>
+              <textarea id="chatMsgInput" class="input-box" rows="2" placeholder="输入端到端加密消息... (Shift + Enter 发送，Enter 换行，支持直接 Ctrl/Cmd+V 粘贴图片)" autocomplete="off"></textarea>
+              <button class="btn btn-primary" id="btnSendMsg" onclick="app.sendMessage()" style="align-self: stretch;">
                 <i data-lucide="send" style="width: 14px; height: 14px;"></i> 发送
               </button>
             </div>
@@ -252,6 +299,14 @@
 
       </div>
     </section>
+
+    <!-- Image Lightbox Modal for enlarged view -->
+    <div class="modal-overlay" id="lightboxModal" onclick="app.closeLightbox()">
+      <div style="max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; align-items: center;">
+        <img id="lightboxImg" src="" style="max-width: 100%; max-height: 85vh; border-radius: 8px; object-fit: contain; box-shadow: 0 8px 32px rgba(0,0,0,0.8);">
+        <span style="color: var(--text-muted); font-size: 0.8rem; margin-top: 8px;">点击任意位置关闭大图</span>
+      </div>
+    </div>
 
   </main>
 
@@ -328,7 +383,24 @@
     </div>
   </div>
 
+  <!-- MODAL 3: Mobile Member List Drawer -->
+  <div class="modal-overlay" id="mobileMembersModal">
+    <div class="modal-box" style="max-width: 360px;">
+      <div class="modal-header">
+        <div class="card-title">
+          <i data-lucide="users" style="color: var(--accent-green);"></i>
+          在线群成员 (<span id="mobileMemberCountBadge">1</span>)
+        </div>
+        <button class="modal-close" onclick="app.closeMobileMembers()">&times;</button>
+      </div>
+      <ul class="member-list" id="mobileMemberListUl" style="max-height: 260px; overflow-y: auto;">
+        <!-- Member items -->
+      </ul>
+    </div>
+  </div>
+
   <!-- Application Scripts -->
+  <script src="js/vendor/crypto-js.min.js"></script>
   <script src="js/crypto.js"></script>
   <script src="js/socket.js"></script>
   <script src="js/app.js"></script>

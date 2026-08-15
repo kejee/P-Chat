@@ -13,12 +13,16 @@ const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ 
+  server,
+  maxPayload: 100 * 1024 * 1024 // 100MB payload limit for encrypted media
+});
 
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // In-Memory Data Structures (Zero Disk Storage)
@@ -203,17 +207,21 @@ wss.on('connection', (ws, req) => {
       case 'join_room': {
         const { roomId, passHash, alias } = payload;
         if (!checkRateLimit(clientIp)) {
-          return ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', message: 'Too many attempts. Please try again later.' }));
+          return ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', message: '尝试次数过多，请 5 分钟后再试。' }));
         }
 
         let targetRoom = null;
+        const cleanPassHash = passHash ? String(passHash).trim() : null;
+        const cleanRoomId = roomId ? String(roomId).trim() : null;
 
-        if (roomId) {
-          targetRoom = rooms.get(roomId);
-        } else if (passHash) {
-          // Direct password matching lookup
+        if (cleanRoomId) {
+          targetRoom = rooms.get(cleanRoomId);
+        }
+        
+        if (!targetRoom && cleanPassHash) {
+          // Direct password matching lookup across all active rooms (visible or invisible)
           for (const r of rooms.values()) {
-            if (r.passHash && r.passHash === passHash) {
+            if (r.passHash && r.passHash.trim() === cleanPassHash) {
               targetRoom = r;
               break;
             }
@@ -222,7 +230,11 @@ wss.on('connection', (ws, req) => {
 
         if (!targetRoom) {
           recordAuthFailure(clientIp);
-          return ws.send(JSON.stringify({ type: 'error', code: 'ROOM_NOT_FOUND', message: 'Room not found or password invalid.' }));
+          return ws.send(JSON.stringify({ 
+            type: 'error', 
+            code: 'ROOM_NOT_FOUND', 
+            message: '未找到匹配的群组！请确认口令是否正确，或群组是否已超时自毁。' 
+          }));
         }
 
         // IP restriction verification
@@ -286,6 +298,7 @@ wss.on('connection', (ws, req) => {
           payload: {
             msgId: msgId,
             senderAlias: ws.alias,
+            senderIp: ws.clientIp,
             iv: iv,
             ciphertext: ciphertext,
             isBurn: Boolean(isBurn),
@@ -297,6 +310,7 @@ wss.on('connection', (ws, req) => {
         // Register burn tracker if requested
         if (isBurn && burnConfig) {
           room.burnMessages.set(msgId, {
+            senderWs: ws,
             type: burnConfig.type || 'timer', // 'timer' | 'views'
             maxViews: parseInt(burnConfig.maxViews) || 1,
             viewDurationSec: parseInt(burnConfig.viewDurationSec) || 10,
@@ -325,14 +339,50 @@ wss.on('connection', (ws, req) => {
         const burnTracker = room.burnMessages.get(msgId);
         if (!burnTracker) return;
 
+        // Rule 3: Sender viewing their own message does NOT count towards burn limits
+        if (ws === burnTracker.senderWs) {
+          ws.send(JSON.stringify({
+            type: 'sender_view_burn_ack',
+            payload: { msgId: msgId }
+          }));
+          return;
+        }
+
+        // Avoid duplicate counting for the same viewer
+        if (burnTracker.viewedBy.has(ws)) return;
         burnTracker.viewedBy.add(ws);
         const currentViews = burnTracker.viewedBy.size;
 
         if (burnTracker.type === 'views') {
-          // If view count reached threshold -> destroy immediately for everyone
+          // If view count reached threshold:
+          // Immediately notify unrevealed peers that quota is exhausted, but allow current viewer 15s to read!
           if (currentViews >= burnTracker.maxViews) {
-            broadcastDestroyMessage(room, msgId, 'view_limit_reached');
-            room.burnMessages.delete(msgId);
+            const quotaDestroyPacket = JSON.stringify({
+              type: 'destroy_message',
+              payload: { msgId: msgId, reason: 'quota_exhausted', excludedWsId: null }
+            });
+
+            // Notify everyone (client will check if it has already revealed)
+            for (const client of room.clients) {
+              if (client.readyState === WebSocket.OPEN) {
+                // If it's the current reader, notify them with a grace reading timer
+                if (client === ws) {
+                  client.send(JSON.stringify({
+                    type: 'burn_countdown_started',
+                    payload: { msgId: msgId, durationMs: 15000, endAt: Date.now() + 15000 }
+                  }));
+                } else if (!burnTracker.viewedBy.has(client) && client !== burnTracker.senderWs) {
+                  // Unrevealed peers get immediate destruction
+                  client.send(quotaDestroyPacket);
+                }
+              }
+            }
+
+            // Cleanup server tracker after grace period
+            setTimeout(() => {
+              room.burnMessages.delete(msgId);
+            }, 16000);
+
           } else {
             // Broadcast view count update
             broadcastBurnProgress(room, msgId, currentViews, burnTracker.maxViews);
