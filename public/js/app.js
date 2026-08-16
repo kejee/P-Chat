@@ -546,6 +546,7 @@ class PChatApp {
   }
 
   enterChatRoomUI() {
+    document.body.classList.add('in-chat-view');
     document.getElementById('lobbyView').classList.remove('active');
     document.getElementById('chatView').classList.add('active');
 
@@ -601,6 +602,7 @@ class PChatApp {
   }
 
   leaveRoom() {
+    document.body.classList.remove('in-chat-view');
     if (this.roomTimerInterval) clearInterval(this.roomTimerInterval);
     this.currentRoom = null;
     this.currentKey = null;
