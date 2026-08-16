@@ -119,7 +119,7 @@ class PChatApp {
     }
   }
 
-  // URL Hash Auto Join (e.g. http://localhost:3000/#pass=xxx or #room=xxx)
+  // URL Hash Auto Join (e.g. http://localhost:53000/#pass=xxx or #room=xxx)
   checkUrlHashForAutoJoin() {
     const hash = window.location.hash;
     if (!hash || hash.length < 2) return;

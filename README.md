@@ -75,20 +75,20 @@
 ```bash
 docker run -d \
   --name p-chat \
-  -p 127.0.0.1:3000:3000 \
+  -p 127.0.0.1:53000:53000 \
   --restart unless-stopped \
   ghcr.io/kejee/p-chat:latest
 ```
 
 > **⚠️ 生产部署环境要求（HTTPS）**：  
 > 现代浏览器（Chrome、Safari 等）严格限制仅在 **安全上下文 (Secure Context)** 下启用原生硬件级 `Web Crypto API`。  
-> 生产环境**请勿直接将 IP:端口 暴露到公网 HTTP**，请绑定本地 `127.0.0.1:3000`，并通过 **Nginx / Caddy / Cloudflare / 宝塔** 等反向代理并配置 SSL 证书（HTTPS），以确保端到端加密（E2EE）在所有移动端与电脑端 100% 正常运行。
+> 生产环境**请勿直接将 IP:端口 暴露到公网 HTTP**，请绑定本地 `127.0.0.1:53000`，并通过 **Nginx / Caddy / Cloudflare / 宝塔** 等反向代理并配置 SSL 证书（HTTPS），以确保端到端加密（E2EE）在所有移动端与电脑端 100% 正常运行。
 
 或使用 `docker-compose.yml`:
 ```bash
 docker compose up -d
 ```
-本地可通过 `http://localhost:3000` 直接体验，线上部署通过绑定的 HTTPS 域名访问。
+本地可通过 `http://localhost:53000` 直接体验，线上部署通过绑定的 HTTPS 域名访问。
 
 ---
 

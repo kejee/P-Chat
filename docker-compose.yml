@@ -7,9 +7,9 @@ services:
     container_name: p-chat
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:53000:53000"
     environment:
-      - PORT=3000
+      - PORT=53000
       - NODE_ENV=production
       - RATE_LIMIT_MAX=30
       - RATE_LIMIT_WINDOW_MS=60000

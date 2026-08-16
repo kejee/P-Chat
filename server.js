@@ -18,7 +18,7 @@ const wss = new WebSocketServer({
   maxPayload: 100 * 1024 * 1024 // 100MB payload limit for encrypted media
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 53000;
 
 // Middleware
 app.use(express.json({ limit: '100mb' }));
