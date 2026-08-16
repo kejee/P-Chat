@@ -122,6 +122,14 @@ function destroyRoom(roomId, reason = 'expired') {
   console.log(`[P-Chat] Room ${roomId} permanently destroyed. Reason: ${reason}`);
 }
 
+// Process-level crash protection
+process.on('uncaughtException', (err) => {
+  console.error('[P-Chat Server] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[P-Chat Server] Unhandled Rejection:', reason);
+});
+
 // WebSocket Connection & Relay Protocol
 wss.on('connection', (ws, req) => {
   const clientIp = getClientIp(req);
@@ -130,7 +138,54 @@ wss.on('connection', (ws, req) => {
   ws.isAdmin = false;
   ws.alias = 'Anonymous';
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
+    // 1. Check for Native Binary Frame ("PCHT" Magic header)
+    if (Buffer.isBuffer(raw) && raw.length >= 20 &&
+        raw[0] === 0x50 && raw[1] === 0x43 && raw[2] === 0x48 && raw[3] === 0x54) {
+      if (!ws.roomId) return;
+      const room = rooms.get(ws.roomId);
+      if (!room) return;
+
+      try {
+        const metaLen = raw.readUInt32BE(16);
+        if (raw.length < 20 + metaLen) return;
+        const metaJson = raw.subarray(20, 20 + metaLen).toString('utf8');
+        const meta = JSON.parse(metaJson);
+
+        // Register burn tracker if requested
+        if (meta.isBurn && meta.burnConfig) {
+          room.burnMessages.set(meta.msgId, {
+            senderWs: ws,
+            type: meta.burnConfig.type || 'timer',
+            maxViews: parseInt(meta.burnConfig.maxViews) || 1,
+            viewDurationSec: parseInt(meta.burnConfig.viewDurationSec) || 10,
+            viewedBy: new Set(),
+            timer: null,
+            createdAt: Date.now()
+          });
+        }
+
+        // Cache into RAM history ring buffer (max 50 entries)
+        if (room.enableHistory && !meta.isBurn) {
+          room.messageHistory.push({ isBinary: true, rawBuffer: raw, msgId: meta.msgId });
+          if (room.messageHistory.length > 50) {
+            room.messageHistory.shift();
+          }
+        }
+
+        // Instant Zero-Copy Broadcast to all peers in room
+        for (const client of room.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(raw, { binary: true });
+          }
+        }
+      } catch (err) {
+        console.error('[P-Chat] Binary relay error:', err);
+      }
+      return;
+    }
+
+    // 2. Text Control Commands (JSON)
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -287,12 +342,11 @@ wss.on('connection', (ws, req) => {
 
         // Send existing message history if enabled and non-empty
         if (targetRoom.enableHistory && targetRoom.messageHistory.length > 0) {
-          ws.send(JSON.stringify({
-            type: 'history_messages',
-            payload: {
-              messages: targetRoom.messageHistory
+          for (const item of targetRoom.messageHistory) {
+            if (item.isBinary && item.rawBuffer) {
+              ws.send(item.rawBuffer, { binary: true });
             }
-          }));
+          }
         }
 
         broadcastMemberList(targetRoom);

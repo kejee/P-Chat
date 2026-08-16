@@ -1,5 +1,6 @@
 /**
  * P-Chat WebSocket Client Controller
+ * Supports Text JSON + High Performance Native Binary ArrayBuffer
  */
 
 class PSocketClient {
@@ -16,6 +17,7 @@ class PSocketClient {
       const wsUrl = `${protocol}//${window.location.host}`;
 
       this.ws = new WebSocket(wsUrl);
+      this.ws.binaryType = 'arraybuffer'; // Native Binary Mode
 
       this.ws.onopen = () => {
         this.isConnected = true;
@@ -25,11 +27,16 @@ class PSocketClient {
       };
 
       this.ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          this.emit(data.type, data.payload || data);
-        } catch (e) {
-          console.error('[PSocket] Failed to parse message:', e);
+        if (event.data instanceof ArrayBuffer) {
+          // Native Binary Frame
+          this.emit('binary_message', event.data);
+        } else {
+          try {
+            const data = JSON.parse(event.data);
+            this.emit(data.type, data.payload || data);
+          } catch (e) {
+            console.error('[PSocket] Failed to parse message:', e);
+          }
         }
       };
 
@@ -67,6 +74,14 @@ class PSocketClient {
       this.ws.send(JSON.stringify({ type, payload }));
     } else {
       console.warn('[PSocket] Cannot send message, WebSocket not connected.');
+    }
+  }
+
+  sendBinary(arrayBuffer) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(arrayBuffer);
+    } else {
+      console.warn('[PSocket] Cannot send binary message, WebSocket not connected.');
     }
   }
 

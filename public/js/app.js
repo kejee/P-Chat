@@ -1,8 +1,6 @@
 /**
  * P-Chat Main Application Controller
- * Supports Text (Shift+Enter to send, Enter to newline),
- * End-to-End Encrypted Images, Videos, Files, Clipboard Pasting,
- * Direct Password Joining & URL Hash Sharing.
+ * High-Performance Native Binary ArrayBuffer Protocol (Zero Base64 Overhead)
  */
 
 class PChatApp {
@@ -18,8 +16,9 @@ class PChatApp {
     this.roomTimerInterval = null;
     this.activeBurnIntervals = new Map(); // msgId -> interval
     this.revealedBurnMessages = new Set(); // msgId set
+    this.burnBinaryStore = new Map(); // msgId -> { iv, cipherBuffer, meta }
     this.isPrivacyShieldLocked = false;
-    this.pendingAttachment = null; // { name, size, type, dataUrl, mimeType }
+    this.pendingAttachment = null; // { name, size, type, mimeType, fileBlob, previewUrl }
 
     this.init();
   }
@@ -81,7 +80,6 @@ class PChatApp {
             e.preventDefault();
             this.sendMessage();
           }
-          // Normal Enter naturally creates newline in textarea
         }
       });
     }
@@ -119,7 +117,6 @@ class PChatApp {
     }
   }
 
-  // URL Hash Auto Join (e.g. http://localhost:53000/#pass=xxx or #room=xxx)
   checkUrlHashForAutoJoin() {
     const hash = window.location.hash;
     if (!hash || hash.length < 2) return;
@@ -133,7 +130,6 @@ class PChatApp {
         const cleanedPass = this.cleanPassword(pass);
         const joinInput = document.getElementById('joinPasswordInput');
         if (joinInput) joinInput.value = cleanedPass;
-        // Auto trigger join after short delay for socket stability
         setTimeout(() => {
           this.joinByPassword();
         }, 300);
@@ -168,7 +164,6 @@ class PChatApp {
   initAntiPeek() {
     const shield = document.getElementById('privacyShield');
     
-    // Auto blur when tab loses focus
     window.addEventListener('blur', () => {
       if (this.currentRoom) {
         shield.classList.add('active');
@@ -176,13 +171,11 @@ class PChatApp {
       }
     });
 
-    // Dismiss blur on click
     shield.addEventListener('click', () => {
       shield.classList.remove('active');
       this.isPrivacyShieldLocked = false;
     });
 
-    // ESC to trigger manual lock
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         shield.classList.toggle('active');
@@ -190,7 +183,6 @@ class PChatApp {
     });
   }
 
-  // Clipboard Paste (e.g. Ctrl/Cmd+V image) Handler
   initPasteHandler() {
     window.addEventListener('paste', (e) => {
       if (!this.currentRoom) return;
@@ -209,13 +201,11 @@ class PChatApp {
     });
   }
 
-  // Handle File picker select
   handleFileSelect(event) {
     const file = event.target.files && event.target.files[0];
     if (file) {
       this.processFileForAttachment(file, file.name);
     }
-    // reset input so same file can be chosen again
     event.target.value = '';
   }
 
@@ -224,27 +214,27 @@ class PChatApp {
       return alert('⚠️ 文件体积过大，单次附件请限制在 80MB 以内。');
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const dataUrl = e.target.result;
-      let mediaType = 'file';
-      if (file.type.startsWith('image/')) {
-        mediaType = 'image';
-      } else if (file.type.startsWith('video/')) {
-        mediaType = 'video';
-      }
+    let mediaType = 'file';
+    if (file.type.startsWith('image/')) {
+      mediaType = 'image';
+    } else if (file.type.startsWith('video/')) {
+      mediaType = 'video';
+    }
 
-      this.pendingAttachment = {
-        name: file.name || defaultName || 'unnamed-attachment',
-        size: file.size,
-        type: mediaType,
-        mimeType: file.type || 'application/octet-stream',
-        dataUrl: dataUrl
-      };
+    const previewUrl = (mediaType === 'image' || mediaType === 'video')
+      ? URL.createObjectURL(file)
+      : null;
 
-      this.renderAttachmentPreview();
+    this.pendingAttachment = {
+      name: file.name || defaultName || 'unnamed-attachment',
+      size: file.size,
+      type: mediaType,
+      mimeType: file.type || 'application/octet-stream',
+      fileBlob: file,
+      previewUrl: previewUrl
     };
-    reader.readAsDataURL(file);
+
+    this.renderAttachmentPreview();
   }
 
   renderAttachmentPreview() {
@@ -258,10 +248,10 @@ class PChatApp {
     bar.style.display = 'flex';
     if (this.pendingAttachment.type === 'image') {
       thumb.innerHTML = `
-        <img src="${this.pendingAttachment.dataUrl}" style="width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--accent-cyan);">
+        <img src="${this.pendingAttachment.previewUrl}" style="width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--accent-cyan);">
         <div>
           <div style="font-weight: 600;">已捕获图片: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 本地端到端加密准备就绪</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
         </div>
       `;
     } else if (this.pendingAttachment.type === 'video') {
@@ -269,7 +259,7 @@ class PChatApp {
         <i data-lucide="video" style="width: 24px; height: 24px; color: var(--accent-cyan);"></i>
         <div>
           <div style="font-weight: 600;">已选定视频: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 本地端到端加密准备就绪</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
         </div>
       `;
     } else {
@@ -277,7 +267,7 @@ class PChatApp {
         <i data-lucide="file" style="width: 24px; height: 24px; color: var(--accent-cyan);"></i>
         <div>
           <div style="font-weight: 600;">已选定文件: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 本地端到端加密准备就绪</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
         </div>
       `;
     }
@@ -285,6 +275,9 @@ class PChatApp {
   }
 
   clearAttachment() {
+    if (this.pendingAttachment && this.pendingAttachment.previewUrl) {
+      URL.revokeObjectURL(this.pendingAttachment.previewUrl);
+    }
     this.pendingAttachment = null;
     this.renderAttachmentPreview();
   }
@@ -297,7 +290,6 @@ class PChatApp {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  // Lightbox Image Enlargement
   openLightbox(src) {
     const modal = document.getElementById('lightboxModal');
     const img = document.getElementById('lightboxImg');
@@ -315,6 +307,11 @@ class PChatApp {
     PSocket.on('connected', () => this.setWsStatus(true));
     PSocket.on('disconnected', () => this.setWsStatus(false));
 
+    // Native Binary Message Received
+    PSocket.on('binary_message', async (arrayBuffer) => {
+      await this.handleIncomingBinaryFrame(arrayBuffer);
+    });
+
     PSocket.on('room_created', (payload) => {
       this.currentRoom = payload;
       this.isAdmin = true;
@@ -328,8 +325,16 @@ class PChatApp {
       this.enterChatRoomUI();
     });
 
-    PSocket.on('chat_message', (payload) => {
-      this.renderIncomingMessage(payload);
+    PSocket.on('history_cleared', (payload) => {
+      const stream = document.getElementById('messageStream');
+      const info = document.createElement('div');
+      info.className = 'history-divider';
+      info.style.borderColor = 'rgba(255, 184, 0, 0.3)';
+      info.innerHTML = `
+        <span style="color: var(--accent-yellow);"><i data-lucide="trash-2" style="width: 13px; height: 13px; vertical-align: middle; margin-right: 4px;"></i> 管理员 (${this.escapeHtml(payload.byAlias)}) 已清空房间内存历史缓冲区</span>
+      `;
+      stream.appendChild(info);
+      this.initIcons();
     });
 
     PSocket.on('burn_countdown_started', (payload) => {
@@ -342,35 +347,6 @@ class PChatApp {
 
     PSocket.on('destroy_message', (payload) => {
       this.destroyMessageElement(payload.msgId, payload.reason);
-    });
-
-    PSocket.on('history_messages', async (payload) => {
-      if (payload.messages && payload.messages.length > 0) {
-        const stream = document.getElementById('messageStream');
-        const divider = document.createElement('div');
-        divider.className = 'history-divider';
-        divider.innerHTML = `
-          <span><i data-lucide="history" style="width: 13px; height: 13px; vertical-align: middle; margin-right: 4px;"></i> 进群前历史记录 (${payload.messages.length}条 · 本地已解密)</span>
-        `;
-        stream.appendChild(divider);
-
-        for (const msg of payload.messages) {
-          await this.renderIncomingMessage(msg, true);
-        }
-        this.initIcons();
-      }
-    });
-
-    PSocket.on('history_cleared', (payload) => {
-      const stream = document.getElementById('messageStream');
-      const info = document.createElement('div');
-      info.className = 'history-divider';
-      info.style.borderColor = 'rgba(255, 184, 0, 0.3)';
-      info.innerHTML = `
-        <span style="color: var(--accent-yellow);"><i data-lucide="trash-2" style="width: 13px; height: 13px; vertical-align: middle; margin-right: 4px;"></i> 管理员 (${this.escapeHtml(payload.byAlias)}) 已清空房间内存历史缓冲区</span>
-      `;
-      stream.appendChild(info);
-      this.initIcons();
     });
 
     PSocket.on('room_config_updated', (payload) => {
@@ -409,7 +385,6 @@ class PChatApp {
     if (input) input.value = pass;
   }
 
-  // Fetch Public Rooms list for Lobby
   async fetchPublicRooms() {
     try {
       const res = await fetch('/api/rooms');
@@ -451,7 +426,6 @@ class PChatApp {
     }
   }
 
-  // Create Room
   async createRoom() {
     const nameInput = document.getElementById('createNameInput');
     const passInput = document.getElementById('createPasswordInput');
@@ -466,7 +440,6 @@ class PChatApp {
     let isPublic = isPublicCheck.checked;
     const enableHistory = enableHistoryCheck ? enableHistoryCheck.checked : true;
 
-    // Rule: If password is empty, room MUST be public
     if (!password) {
       isPublic = true;
     }
@@ -474,7 +447,6 @@ class PChatApp {
     const allowedIps = ipsInput.value.split(',').map(s => s.trim()).filter(Boolean);
     const durationMinutes = parseInt(durationSelect.value) || 60;
 
-    // Derive CryptoKey & passHash
     this.currentPassword = password;
     this.currentKey = await PCrypto.deriveKey(password);
     const passHash = password ? await PCrypto.sha256(password) : null;
@@ -490,7 +462,6 @@ class PChatApp {
     });
   }
 
-  // Join Room by Password
   async joinByPassword() {
     const passInput = document.getElementById('joinPasswordInput');
     const aliasInput = document.getElementById('joinAliasInput');
@@ -506,7 +477,6 @@ class PChatApp {
       this.myAlias = aliasInput.value.trim();
     }
 
-    // Derive Key & Hash in Browser
     this.currentKey = await PCrypto.deriveKey(password);
     const passHash = await PCrypto.sha256(password);
 
@@ -516,35 +486,41 @@ class PChatApp {
     });
   }
 
-  // Join Public Room click handler
   clickJoinPublicRoom(roomId, hasPassword) {
     if (hasPassword) {
       this.activePromptRoomId = roomId;
       document.getElementById('promptPassInput').value = '';
       document.getElementById('passwordPromptModal').classList.add('active');
+      document.getElementById('promptPassInput').focus();
     } else {
-      this.confirmJoinPasswordlessRoom(roomId);
+      this.currentPassword = '';
+      PCrypto.deriveKey('').then(key => {
+        this.currentKey = key;
+        PSocket.send('join_room', {
+          roomId: roomId,
+          passHash: null,
+          alias: this.myAlias
+        });
+      });
     }
   }
 
-  async confirmJoinPasswordlessRoom(roomId) {
-    this.currentPassword = '';
-    this.currentKey = await PCrypto.deriveKey('');
-    PSocket.send('join_room', {
-      roomId: roomId,
-      passHash: null,
-      alias: this.myAlias
-    });
+  closePasswordPrompt() {
+    document.getElementById('passwordPromptModal').classList.remove('active');
+    this.activePromptRoomId = null;
   }
 
   async confirmJoinPromptedRoom() {
     const rawPass = document.getElementById('promptPassInput').value;
-    const pass = this.cleanPassword(rawPass);
-    if (!pass) return alert('请输入口令！');
+    const password = this.cleanPassword(rawPass);
 
-    this.currentPassword = pass;
-    this.currentKey = await PCrypto.deriveKey(pass);
-    const passHash = await PCrypto.sha256(pass);
+    if (!password) {
+      return alert('请输入该群组的加入口令！');
+    }
+
+    this.currentPassword = password;
+    this.currentKey = await PCrypto.deriveKey(password);
+    const passHash = await PCrypto.sha256(password);
 
     PSocket.send('join_room', {
       roomId: this.activePromptRoomId,
@@ -555,17 +531,10 @@ class PChatApp {
     this.closePasswordPrompt();
   }
 
-  closePasswordPrompt() {
-    document.getElementById('passwordPromptModal').classList.remove('active');
-    this.activePromptRoomId = null;
-  }
-
-  // Switch UI to Chat Room
   enterChatRoomUI() {
     document.getElementById('lobbyView').classList.remove('active');
     document.getElementById('chatView').classList.add('active');
 
-    // Header buttons
     document.getElementById('btnLeaveRoom').style.display = 'inline-flex';
     document.getElementById('btnAdminModal').style.display = this.isAdmin ? 'inline-flex' : 'none';
     const mobileAdminBtn = document.getElementById('btnMobileAdmin');
@@ -574,15 +543,13 @@ class PChatApp {
     document.getElementById('activeRoomName').innerText = this.currentRoom.name;
     this.updateRoomBadge();
 
-    // Clear messages & reset attachment
     this.clearAttachment();
     document.getElementById('messageStream').innerHTML = `
       <div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 12px 0;">
-        🔒 端到端加密隧道已建立。文本、图片、视频及文件在离开本机前已加密，任何第三方及服务器均无法解密。
+        🔒 原生二进制端到端加密隧道已建立。数据在离开本机前完成加密，服务器仅进行二进制盲中继。
       </div>
     `;
 
-    // Start Room Lifetime Countdown
     this.startRoomCountdown();
     this.initIcons();
   }
@@ -627,6 +594,7 @@ class PChatApp {
     this.isAdmin = false;
     this.adminToken = null;
     this.revealedBurnMessages = new Set();
+    this.burnBinaryStore.clear();
     this.clearAttachment();
 
     document.getElementById('chatView').classList.remove('active');
@@ -637,7 +605,6 @@ class PChatApp {
     const mobileAdminBtn = document.getElementById('btnMobileAdmin');
     if (mobileAdminBtn) mobileAdminBtn.style.display = 'none';
 
-    // Clear url hash
     if (window.location.hash) {
       history.replaceState(null, null, ' ');
     }
@@ -684,7 +651,6 @@ class PChatApp {
     this.initIcons();
   }
 
-  // Toggle Burn Controls
   toggleBurnControls() {
     const isChecked = document.getElementById('enableBurnCheck').checked;
     document.getElementById('burnConfigContainer').style.display = isChecked ? 'inline-flex' : 'none';
@@ -725,7 +691,7 @@ class PChatApp {
     if (container) container.style.display = 'none';
   }
 
-  // Send Message (Shift+Enter or Send Button)
+  // Send Message via Native Binary ArrayBuffer Frame (0% Base64 Overhead)
   async sendMessage() {
     const input = document.getElementById('chatMsgInput');
     const text = input.value.trim();
@@ -746,250 +712,220 @@ class PChatApp {
     }
 
     try {
+      const msgId = 'msg-' + Math.random().toString(36).substring(2, 11);
       const isMedia = Boolean(attachment);
+
       if (isMedia) {
-        this.showSendProgress(`正在对 ${this.escapeHtml(attachment.name)} 进行端到端加密...`, 25);
+        this.showSendProgress(`正在读取 ${this.escapeHtml(attachment.name)}...`, 20);
       }
 
-      // Build payload structure (Text + Media attachment)
-      const payloadObject = {
-        text: text,
-        media: attachment || null,
-        timestamp: Date.now()
+      let payloadBuffer;
+      let metaObject = {
+        msgId: msgId,
+        senderAlias: this.myAlias,
+        timestamp: Date.now(),
+        isBurn: isBurn,
+        burnConfig: burnConfig,
+        text: text || '',
+        hasMedia: isMedia
       };
 
-      const payloadJson = JSON.stringify(payloadObject);
-
       if (isMedia) {
-        this.updateSendProgress('正在生成 AES-256-GCM 密文与认证标签...', 65);
+        this.updateSendProgress('正在进行原生硬件级 AES-256-GCM 二进制加密...', 50);
+        metaObject.mediaMeta = {
+          name: attachment.name,
+          size: attachment.size,
+          type: attachment.type,
+          mimeType: attachment.mimeType
+        };
+        payloadBuffer = await attachment.fileBlob.arrayBuffer();
+      } else {
+        payloadBuffer = new TextEncoder().encode(text);
       }
 
-      // Encrypt in Browser via AES-256-GCM
-      const msgId = 'msg-' + Math.random().toString(36).substring(2, 11);
-      const { iv, ciphertext } = await PCrypto.encrypt(payloadJson, this.currentKey);
-
+      // Pack binary frame
       if (isMedia) {
-        this.updateSendProgress('正在通过加密隧道安全发送...', 90);
+        this.updateSendProgress('正在封装零拷贝二进制流...', 80);
       }
+      const packet = await PCrypto.packBinaryFrame(metaObject, payloadBuffer, this.currentKey);
 
-      PSocket.send('send_message', {
-        msgId: msgId,
-        iv: iv,
-        ciphertext: ciphertext,
-        isBurn: isBurn,
-        burnConfig: burnConfig
-      });
+      // Send binary frame directly to WebSocket
+      PSocket.sendBinary(packet);
 
       if (isMedia) {
         this.updateSendProgress('发送完成！', 100);
         setTimeout(() => this.hideSendProgress(), 400);
       }
 
-      // Clear input & reset attachment
       input.value = '';
       this.clearAttachment();
       input.focus();
     } catch (err) {
-      console.error('[PChat] Failed to send message:', err);
+      console.error('[PChat] Failed to send binary message:', err);
       alert('⚠️ 发送失败: ' + (err.message || err));
       this.hideSendProgress();
     }
   }
 
-  dataUrlToBlobUrl(dataUrl) {
+  // Handle Incoming Binary Frame (Live message or History replay)
+  async handleIncomingBinaryFrame(arrayBuffer) {
     try {
-      const parts = dataUrl.split(',');
-      const mimeMatch = parts[0].match(/:(.*?);/);
-      const mime = mimeMatch ? mimeMatch[1] : 'video/mp4';
-      const bstr = atob(parts[1]);
-      let n = bstr.length;
-      const u8arr = new Uint8Array(n);
-      while (n--) {
-        u8arr[n] = bstr.charCodeAt(n);
-      }
-      const blob = new Blob([u8arr], { type: mime });
-      return URL.createObjectURL(blob);
-    } catch (e) {
-      return dataUrl;
-    }
-  }
+      const frame = PCrypto.unpackBinaryFrame(arrayBuffer);
+      if (!frame) return;
 
-  // Render Incoming Message
-  async renderIncomingMessage(payload, isHistory = false) {
-    const stream = document.getElementById('messageStream');
-    const isOwn = payload.senderAlias.includes(this.myAlias);
-    const timeStr = new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const { iv, meta, cipherBuffer } = frame;
+      const stream = document.getElementById('messageStream');
+      const isOwn = meta.senderAlias.includes(this.myAlias);
+      const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    const bubble = document.createElement('div');
-    bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'} ${isHistory ? 'msg-history-bubble' : ''}`;
-    bubble.id = payload.msgId;
+      const bubble = document.createElement('div');
+      bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
+      bubble.id = meta.msgId;
 
-    if (payload.isBurn) {
-      // Burn After Reading Mask Card
-      const burnHint = payload.burnConfig?.type === 'views'
-        ? `🔥 阅后即焚 (限 ${payload.burnConfig.maxViews} 人查看)`
-        : `🔥 阅后即焚 (查看后 ${payload.burnConfig.viewDurationSec} 秒自毁)`;
+      if (meta.isBurn) {
+        // Store cipherBuffer for on-demand reveal
+        this.burnBinaryStore.set(meta.msgId, { iv, cipherBuffer, meta });
 
-      bubble.innerHTML = `
-        <div class="msg-meta">
-          <span>${this.escapeHtml(payload.senderAlias)} ${isHistory ? '<span class="history-tag">历史</span>' : ''}</span>
-          <span>${timeStr}</span>
-        </div>
-        <div class="msg-content-card msg-burn-card" id="card-${payload.msgId}" onclick="app.revealBurnMessage('${payload.msgId}', '${payload.iv}', '${payload.ciphertext}', '${payload.burnConfig?.type}', ${isOwn})">
-          <div class="burn-shield-overlay" id="burnMask-${payload.msgId}">
-            <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
-            <span>${burnHint} · ${isOwn ? '发件人点击预览' : '点击解密查看'}</span>
+        const burnHint = meta.burnConfig?.type === 'views'
+          ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
+          : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
+
+        bubble.innerHTML = `
+          <div class="msg-meta">
+            <span>${this.escapeHtml(meta.senderAlias)}</span>
+            <span>${timeStr}</span>
           </div>
-          <div class="burn-text" id="burnText-${payload.msgId}" style="display: none;"></div>
-          <div class="burn-timer-bar" id="burnBar-${payload.msgId}" style="width: 0%;"></div>
-        </div>
-      `;
-    } else {
-      // Normal E2EE Message - Instant Decrypt
-      const decryptedRaw = await PCrypto.decrypt(payload.iv, payload.ciphertext, this.currentKey);
-      const renderedHtml = this.formatDecryptedContent(decryptedRaw);
+          <div class="msg-content-card msg-burn-card" id="card-${meta.msgId}" onclick="app.revealBurnMessage('${meta.msgId}', ${isOwn})">
+            <div class="burn-shield-overlay" id="burnMask-${meta.msgId}">
+              <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+              <span>${burnHint} · ${isOwn ? '发件人点击预览' : '点击解密查看'}</span>
+            </div>
+            <div class="burn-text" id="burnText-${meta.msgId}" style="display: none;"></div>
+            <div class="burn-timer-bar" id="burnBar-${meta.msgId}" style="width: 0%;"></div>
+          </div>
+        `;
+      } else {
+        // Instant decrypt
+        const plainBuffer = await PCrypto.decryptBinary(iv, cipherBuffer, this.currentKey);
+        const renderedHtml = this.renderBinaryContentHtml(meta, plainBuffer);
 
-      bubble.innerHTML = `
-        <div class="msg-meta">
-          <span>${this.escapeHtml(payload.senderAlias)} ${isHistory ? '<span class="history-tag">历史</span>' : ''}</span>
-          <span>${timeStr}</span>
-        </div>
-        <div class="msg-content-card">
-          ${renderedHtml}
-        </div>
-      `;
-    }
-
-    stream.appendChild(bubble);
-    stream.scrollTop = stream.scrollHeight;
-    this.initIcons();
-  }
-
-  // Format decrypted content into HTML (handles pure text or { text, media })
-  formatDecryptedContent(raw) {
-    try {
-      const obj = JSON.parse(raw);
-      let html = '';
-      if (obj.text) {
-        html += `<div style="white-space: pre-wrap;">${this.escapeHtml(obj.text)}</div>`;
+        bubble.innerHTML = `
+          <div class="msg-meta">
+            <span>${this.escapeHtml(meta.senderAlias)}</span>
+            <span>${timeStr}</span>
+          </div>
+          <div class="msg-content-card">
+            ${renderedHtml}
+          </div>
+        `;
       }
-      if (obj.media) {
-        const m = obj.media;
-        if (m.type === 'image') {
-          html += `
-            <img src="${m.dataUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${m.dataUrl}')" title="点击放大查看">
-          `;
-        } else if (m.type === 'video') {
-          const blobUrl = this.dataUrlToBlobUrl(m.dataUrl);
-          html += `
-            <video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>
-          `;
-        } else {
-          // File download card
-          html += `
-            <a href="${m.dataUrl}" download="${this.escapeHtml(m.name)}" class="file-attachment-card" title="点击解密下载">
-              <div class="file-icon-box">
-                <i data-lucide="file-down" style="width: 20px; height: 20px;"></i>
-              </div>
-              <div class="file-info-text">
-                <span class="file-name-text">${this.escapeHtml(m.name)}</span>
-                <span class="file-size-text">${this.formatFileSize(m.size)} · 点击安全下载</span>
-              </div>
-            </a>
-          `;
-        }
-      }
-      return html || '<span style="color: var(--text-muted);">[空白消息]</span>';
-    } catch (e) {
-      // Fallback for legacy plain text messages
-      return `<div style="white-space: pre-wrap;">${this.escapeHtml(raw)}</div>`;
+
+      stream.appendChild(bubble);
+      stream.scrollTop = stream.scrollHeight;
+      this.initIcons();
+    } catch (err) {
+      console.error('[PChat] Decrypt binary frame failed:', err);
     }
   }
 
-  // Reveal Burn Message on Click
-  async revealBurnMessage(msgId, iv, ciphertext, burnType, isOwn) {
+  // Helper to render Decrypted Plain Buffer into visual DOM elements
+  renderBinaryContentHtml(meta, plainBuffer) {
+    let html = '';
+
+    if (meta.hasMedia && meta.mediaMeta) {
+      const blob = new Blob([plainBuffer], { type: meta.mediaMeta.mimeType });
+      const blobUrl = URL.createObjectURL(blob);
+
+      if (meta.mediaMeta.type === 'image') {
+        html += `
+          <img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">
+        `;
+      } else if (meta.mediaMeta.type === 'video') {
+        html += `
+          <video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>
+        `;
+      } else {
+        html += `
+          <a href="${blobUrl}" download="${this.escapeHtml(meta.mediaMeta.name)}" class="file-attachment-card" title="点击解密下载">
+            <div class="file-icon-box">
+              <i data-lucide="file-down" style="width: 20px; height: 20px;"></i>
+            </div>
+            <div class="file-info-text">
+              <span class="file-name-text">${this.escapeHtml(meta.mediaMeta.name)}</span>
+              <span class="file-size-text">${this.formatFileSize(meta.mediaMeta.size)} · 点击安全下载</span>
+            </div>
+          </a>
+        `;
+      }
+    }
+
+    if (meta.text) {
+      html += `<div style="white-space: pre-wrap; ${meta.hasMedia ? 'margin-top: 8px;' : ''}">${this.escapeHtml(meta.text)}</div>`;
+    } else if (!meta.hasMedia) {
+      const text = new TextDecoder().decode(plainBuffer);
+      html += `<div style="white-space: pre-wrap;">${this.escapeHtml(text)}</div>`;
+    }
+
+    return html || '<span style="color: var(--text-muted);">[空白消息]</span>';
+  }
+
+  async revealBurnMessage(msgId, isOwn) {
     const card = document.getElementById(`card-${msgId}`);
     const mask = document.getElementById(`burnMask-${msgId}`);
     const textElem = document.getElementById(`burnText-${msgId}`);
     const bar = document.getElementById(`burnBar-${msgId}`);
     if (!card || !mask || !textElem) return;
 
-    if (this.revealedBurnMessages.has(msgId)) {
-      return; // already revealed
-    }
+    if (this.revealedBurnMessages.has(msgId)) return;
     this.revealedBurnMessages.add(msgId);
 
-    // Decrypt content
-    const decryptedRaw = await PCrypto.decrypt(iv, ciphertext, this.currentKey);
-    const renderedHtml = this.formatDecryptedContent(decryptedRaw);
+    const frame = this.burnBinaryStore.get(msgId);
+    if (!frame) return;
 
-    mask.style.display = 'none';
-    textElem.innerHTML = `
-      <div style="margin-bottom: 6px;">
-        <span style="font-size: 0.72rem; color: var(--accent-red); font-weight: 600;">
-          🔥 阅后即焚已激活 ${isOwn ? '(发件人预览模式，不计入读者配额)' : ''}
-        </span>
-      </div>
-      ${renderedHtml}
-      <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
-        <button class="btn btn-danger btn-sm" style="padding: 3px 8px; font-size: 0.72rem;" onclick="event.stopPropagation(); app.destroyMessageElement('${msgId}', 'user_destroyed_early')">
-          <i data-lucide="trash-2" style="width: 12px; height: 12px;"></i> 我已看完 · 立即销毁
-        </button>
-      </div>
-    `;
-    textElem.style.display = 'block';
-    this.initIcons();
+    try {
+      const plainBuffer = await PCrypto.decryptBinary(frame.iv, frame.cipherBuffer, this.currentKey);
+      const renderedHtml = this.renderBinaryContentHtml(frame.meta, plainBuffer);
 
-    // Notify server of read action
-    PSocket.send('read_burn_message', { msgId: msgId });
+      mask.style.display = 'none';
+      textElem.innerHTML = `
+        <div style="margin-bottom: 6px;">
+          <span style="font-size: 0.72rem; color: var(--accent-red); font-weight: 600;">
+            🔥 阅后即焚已激活 ${isOwn ? '(发件人预览模式，不计入读者配额)' : ''}
+          </span>
+        </div>
+        ${renderedHtml}
+        <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+          <button class="btn btn-danger btn-sm" style="padding: 3px 8px; font-size: 0.72rem;" onclick="event.stopPropagation(); app.destroyMessageElement('${msgId}', 'user_destroyed_early')">
+            <i data-lucide="trash-2" style="width: 12px; height: 12px;"></i> 我已看完 · 立即销毁
+          </button>
+        </div>
+      `;
+      textElem.style.display = 'block';
+      this.initIcons();
 
-    // Local reading protection countdown: give this viewer 15s to read before destroying
-    if (!isOwn) {
-      const readDurationMs = 15000;
-      const startTime = Date.now();
-      const interval = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const pct = Math.min(100, (elapsed / readDurationMs) * 100);
-        if (bar) bar.style.width = `${pct}%`;
+      // Notify server of read action
+      PSocket.send('read_burn_message', { msgId: msgId });
 
-        if (elapsed >= readDurationMs) {
-          clearInterval(interval);
-          this.destroyMessageElement(msgId, 'local_read_timeout');
-        }
-      }, 50);
-      this.activeBurnIntervals.set(msgId, interval);
-    }
-  }
+      if (!isOwn) {
+        const readDurationMs = 15000;
+        const startTime = Date.now();
+        const interval = setInterval(() => {
+          const elapsed = Date.now() - startTime;
+          const pct = Math.min(100, (elapsed / readDurationMs) * 100);
+          if (bar) bar.style.width = `${pct}%`;
 
-  // Reader local countdown timer
-  startLocalBurnCountdown(msgId, durationMs) {
-    const bar = document.getElementById(`burnBar-${msgId}`);
-    if (!bar) return;
-
-    const startTime = Date.now();
-    const endAt = startTime + durationMs;
-
-    if (this.activeBurnIntervals.has(msgId)) {
-      clearInterval(this.activeBurnIntervals.get(msgId));
-    }
-
-    const interval = setInterval(() => {
-      const now = Date.now();
-      const elapsed = now - startTime;
-      const progress = Math.min(100, (elapsed / durationMs) * 100);
-      bar.style.width = `${progress}%`;
-
-      if (now >= endAt) {
-        clearInterval(interval);
-        this.activeBurnIntervals.delete(msgId);
-        this.destroyMessageElement(msgId, 'reader_timer_done');
+          if (elapsed >= readDurationMs) {
+            clearInterval(interval);
+            this.destroyMessageElement(msgId, 'local_read_timeout');
+          }
+        }, 50);
+        this.activeBurnIntervals.set(msgId, interval);
       }
-    }, 50);
-
-    this.activeBurnIntervals.set(msgId, interval);
+    } catch (err) {
+      console.error('[PChat] Failed to reveal burn message:', err);
+    }
   }
 
-  // Handle countdown started from server (for 'timer' mode)
   handleBurnCountdownStarted(payload) {
     const { msgId, durationMs, endAt } = payload;
     const bar = document.getElementById(`burnBar-${msgId}`);
@@ -1028,11 +964,9 @@ class PChatApp {
     }
   }
 
-  // Destroy Message with ash animation
   destroyMessageElement(msgId, reason) {
-    // If reason is quota_exhausted and current reader has already revealed and reading, don't interrupt immediately!
     if (reason === 'quota_exhausted' && this.revealedBurnMessages && this.revealedBurnMessages.has(msgId)) {
-      return; // let their local reading countdown finish
+      return;
     }
 
     const elem = document.getElementById(msgId);
@@ -1048,9 +982,9 @@ class PChatApp {
       clearInterval(this.activeBurnIntervals.get(msgId));
       this.activeBurnIntervals.delete(msgId);
     }
+    this.burnBinaryStore.delete(msgId);
   }
 
-  // Admin Modal Methods
   openAdminModal() {
     if (!this.isAdmin || !this.currentRoom) return;
     document.getElementById('adminPasswordInput').value = this.currentPassword;
@@ -1074,7 +1008,6 @@ class PChatApp {
     const enableHistory = document.getElementById('adminEnableHistory').checked;
     const ips = document.getElementById('adminAllowedIps').value.split(',').map(s => s.trim()).filter(Boolean);
 
-    // If password cleared, MUST be public
     if (!newPass) {
       isPublic = true;
     }
@@ -1087,6 +1020,7 @@ class PChatApp {
       adminToken: this.adminToken,
       passHash: passHash,
       isPublic: isPublic,
+      enableHistory: enableHistory,
       allowedIps: ips
     });
 

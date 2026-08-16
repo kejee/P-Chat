@@ -5,6 +5,7 @@
  * - PBKDF2-SHA256 (100,000 iterations + salt) for key derivation
  * - AES-256-GCM (Authenticated Encryption with 96-bit unique IV & 128-bit auth tag)
  * - SHA-256 for zero-knowledge server hash verifier
+ * - Zero-Copy Native Binary ArrayBuffer Frame Protocol (0% Base64 Overhead)
  */
 
 class PCrypto {
@@ -30,35 +31,6 @@ class PCrypto {
       result += charset[randomValues[i] % charset.length];
     }
     return result;
-  }
-
-  /**
-   * Safe chunked Uint8Array to Base64 conversion (prevents Call Stack Exceeded on large files)
-   */
-  static uint8ToBase64(uint8) {
-    let binary = '';
-    const len = uint8.byteLength;
-    const chunkSize = 0x8000; // 32KB chunks
-    for (let i = 0; i < len; i += chunkSize) {
-      binary += String.fromCharCode.apply(
-        null,
-        uint8.subarray(i, Math.min(i + chunkSize, len))
-      );
-    }
-    return btoa(binary);
-  }
-
-  /**
-   * Safe Base64 to Uint8Array conversion
-   */
-  static base64ToUint8(base64) {
-    const binary = atob(base64);
-    const len = binary.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
   }
 
   /**
@@ -116,66 +88,93 @@ class PCrypto {
   }
 
   /**
-   * Encrypt plaintext string using AES-256-GCM
-   * Returns: { iv: hexString, ciphertext: base64String }
+   * Raw Binary Pack: Packs Metadata + Native Encrypted Binary into 1:1 Wire Frame
+   * Protocol Format:
+   * [0..3]   : Magic "PCHT" (4B)
+   * [4..15]  : 12-byte random IV (12B)
+   * [16..19] : Meta JSON length (4B Uint32BE)
+   * [20..20+metaLen-1] : UTF-8 Meta JSON
+   * [20+metaLen..end]  : AES-256-GCM Ciphertext ArrayBuffer
    */
-  static async encrypt(plaintext, cryptoKey) {
+  static async packBinaryFrame(metaObject, plainBuffer, cryptoKey) {
     if (!PCrypto.isAvailable()) {
-      throw new Error('WebCrypto_Unavailable: 浏览器禁用了密码学 API，请使用 HTTPS 或 Localhost 访问');
+      throw new Error('WebCrypto_Unavailable');
     }
 
-    const encoder = new TextEncoder();
-    const encodedData = encoder.encode(plaintext);
-
-    // 96-bit (12 bytes) IV standard for AES-GCM
     const iv = new Uint8Array(12);
     crypto.getRandomValues(iv);
 
+    // Encrypt raw ArrayBuffer
     const cipherBuffer = await crypto.subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv
-      },
+      { name: 'AES-GCM', iv: iv },
       cryptoKey,
-      encodedData
+      plainBuffer
     );
 
-    const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
-    const ciphertextBase64 = PCrypto.uint8ToBase64(new Uint8Array(cipherBuffer));
+    const metaBytes = new TextEncoder().encode(JSON.stringify(metaObject));
+    const metaLen = metaBytes.length;
+
+    const totalLen = 4 + 12 + 4 + metaLen + cipherBuffer.byteLength;
+    const packet = new Uint8Array(totalLen);
+
+    // 1. Magic
+    packet[0] = 0x50; packet[1] = 0x43; packet[2] = 0x48; packet[3] = 0x54; // "PCHT"
+    // 2. IV
+    packet.set(iv, 4);
+    // 3. Meta Length
+    const view = new DataView(packet.buffer);
+    view.setUint32(16, metaLen, false); // Big-Endian
+    // 4. Meta Bytes
+    packet.set(metaBytes, 20);
+    // 5. Ciphertext
+    packet.set(new Uint8Array(cipherBuffer), 20 + metaLen);
+
+    return packet.buffer;
+  }
+
+  /**
+   * Unpack Binary Frame Header and Extract Ciphertext
+   */
+  static unpackBinaryFrame(arrayBuffer) {
+    const view = new DataView(arrayBuffer);
+    if (view.byteLength < 20) return null;
+
+    // Check magic
+    if (view.getUint8(0) !== 0x50 || view.getUint8(1) !== 0x43 ||
+        view.getUint8(2) !== 0x48 || view.getUint8(3) !== 0x54) {
+      return null;
+    }
+
+    const iv = new Uint8Array(arrayBuffer, 4, 12);
+    const metaLen = view.getUint32(16, false);
+
+    if (view.byteLength < 20 + metaLen) return null;
+
+    const metaBytes = new Uint8Array(arrayBuffer, 20, metaLen);
+    const metaJson = new TextDecoder().decode(metaBytes);
+    const meta = JSON.parse(metaJson);
+
+    const cipherBuffer = arrayBuffer.slice(20 + metaLen);
 
     return {
-      iv: ivHex,
-      ciphertext: ciphertextBase64
+      iv: iv,
+      meta: meta,
+      cipherBuffer: cipherBuffer
     };
   }
 
   /**
-   * Decrypt AES-256-GCM ciphertext
+   * Decrypt Native Binary Ciphertext into Plain ArrayBuffer
    */
-  static async decrypt(ivHex, ciphertextBase64, cryptoKey) {
+  static async decryptBinary(ivUint8Array, cipherArrayBuffer, cryptoKey) {
     if (!PCrypto.isAvailable()) {
-      return '[⚠️ 浏览器禁用了解密 API，请使用 HTTPS 或 Localhost 访问]';
+      throw new Error('WebCrypto_Unavailable');
     }
-
-    try {
-      const iv = new Uint8Array(ivHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-      const cipherBytes = PCrypto.base64ToUint8(ciphertextBase64);
-
-      const decryptedBuffer = await crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: iv
-        },
-        cryptoKey,
-        cipherBytes
-      );
-
-      const decoder = new TextDecoder();
-      return decoder.decode(decryptedBuffer);
-    } catch (e) {
-      console.error('[PCrypto] Decryption error:', e);
-      return '[⚠️ 密文解密失败：口令不匹配或数据已损坏]';
-    }
+    return await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: ivUint8Array },
+      cryptoKey,
+      cipherArrayBuffer
+    );
   }
 }
 
