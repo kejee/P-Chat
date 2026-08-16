@@ -114,6 +114,43 @@ body {
   font-weight: 600;
 }
 
+.version-tag {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  background: rgba(0, 229, 255, 0.1);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-weight: 700;
+}
+
+/* App Footer */
+.app-footer {
+  margin-top: 36px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.footer-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.2s ease;
+}
+
+.footer-link:hover {
+  color: var(--accent-cyan);
+}
+
 .header-actions {
   display: flex;
   align-items: center;

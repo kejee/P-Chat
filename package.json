@@ -1,6 +1,6 @@
 {
   "name": "p-chat",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Zero-Knowledge End-to-End Encrypted Ephemeral Web Messenger",
   "main": "server.js",
   "type": "commonjs",
