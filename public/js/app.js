@@ -764,9 +764,12 @@ class PChatApp {
       // Send binary frame directly to WebSocket
       PSocket.sendBinary(packet);
 
+      // Instantly render own message locally (Zero Network Loopback Delay & 0 Extra Downlink Traffic)
+      this.renderOwnMessageLocally(metaObject, payloadBuffer, packet);
+
       if (isMedia) {
         this.updateSendProgress('发送完成！', 100);
-        setTimeout(() => this.hideSendProgress(), 400);
+        setTimeout(() => this.hideSendProgress(), 300);
       }
 
       input.value = '';
@@ -777,6 +780,56 @@ class PChatApp {
       alert('⚠️ 发送失败: ' + (err.message || err));
       this.hideSendProgress();
     }
+  }
+
+  // Render sender's own message locally without waiting or downloading from server
+  renderOwnMessageLocally(meta, plainBuffer, packet) {
+    const stream = document.getElementById('messageStream');
+    const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble own';
+    bubble.id = meta.msgId;
+
+    if (meta.isBurn) {
+      const frame = PCrypto.unpackBinaryFrame(packet);
+      if (frame) {
+        this.burnBinaryStore.set(meta.msgId, frame);
+      }
+      const burnHint = meta.burnConfig?.type === 'views'
+        ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
+        : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
+
+      bubble.innerHTML = `
+        <div class="msg-meta">
+          <span>${this.escapeHtml(meta.senderAlias)}</span>
+          <span>${timeStr}</span>
+        </div>
+        <div class="msg-content-card msg-burn-card" id="card-${meta.msgId}" onclick="app.revealBurnMessage('${meta.msgId}', true)">
+          <div class="burn-shield-overlay" id="burnMask-${meta.msgId}">
+            <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+            <span>${burnHint} · 发件人点击预览</span>
+          </div>
+          <div class="burn-text" id="burnText-${meta.msgId}" style="display: none;"></div>
+          <div class="burn-timer-bar" id="burnBar-${meta.msgId}" style="width: 0%;"></div>
+        </div>
+      `;
+    } else {
+      const renderedHtml = this.renderBinaryContentHtml(meta, plainBuffer);
+      bubble.innerHTML = `
+        <div class="msg-meta">
+          <span>${this.escapeHtml(meta.senderAlias)}</span>
+          <span>${timeStr}</span>
+        </div>
+        <div class="msg-content-card">
+          ${renderedHtml}
+        </div>
+      `;
+    }
+
+    stream.appendChild(bubble);
+    stream.scrollTop = stream.scrollHeight;
+    this.initIcons();
   }
 
   // Handle Incoming Binary Frame (Live message or History replay)

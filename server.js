@@ -165,17 +165,17 @@ wss.on('connection', (ws, req) => {
           });
         }
 
-        // Cache into RAM history ring buffer (max 50 entries)
+        // Cache into RAM history ring buffer (max 30 entries)
         if (room.enableHistory && !meta.isBurn) {
           room.messageHistory.push({ isBinary: true, rawBuffer: raw, msgId: meta.msgId });
-          if (room.messageHistory.length > 50) {
+          if (room.messageHistory.length > 30) {
             room.messageHistory.shift();
           }
         }
 
-        // Instant Zero-Copy Broadcast to all peers in room
+        // Instant Zero-Copy Broadcast ONLY to peers (exclude sender to prevent double memory explosion)
         for (const client of room.clients) {
-          if (client.readyState === WebSocket.OPEN) {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
             client.send(raw, { binary: true });
           }
         }
