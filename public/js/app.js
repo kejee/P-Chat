@@ -165,7 +165,7 @@ class PChatApp {
     const shield = document.getElementById('privacyShield');
     
     window.addEventListener('blur', () => {
-      if (this.currentRoom) {
+      if (this.currentRoom && this.currentRoom.enableAntiPeek) {
         shield.classList.add('active');
         this.isPrivacyShieldLocked = true;
       }
@@ -178,7 +178,9 @@ class PChatApp {
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        shield.classList.toggle('active');
+        if (this.currentRoom && this.currentRoom.enableAntiPeek) {
+          shield.classList.toggle('active');
+        }
       }
     });
   }
@@ -354,8 +356,15 @@ class PChatApp {
         this.currentRoom.hasPassword = payload.hasPassword;
         this.currentRoom.isPublic = payload.isPublic;
         this.currentRoom.enableHistory = payload.enableHistory;
+        this.currentRoom.enableAntiPeek = payload.enableAntiPeek;
         this.currentRoom.allowedIps = payload.allowedIps;
         this.updateRoomBadge();
+
+        if (!this.currentRoom.enableAntiPeek) {
+          const shield = document.getElementById('privacyShield');
+          if (shield) shield.classList.remove('active');
+          this.isPrivacyShieldLocked = false;
+        }
       }
     });
 
@@ -431,6 +440,7 @@ class PChatApp {
     const passInput = document.getElementById('createPasswordInput');
     const isPublicCheck = document.getElementById('createIsPublic');
     const enableHistoryCheck = document.getElementById('createEnableHistory');
+    const enableAntiPeekCheck = document.getElementById('createEnableAntiPeek');
     const durationSelect = document.getElementById('createDestroyDuration');
     const ipsInput = document.getElementById('createAllowedIps');
 
@@ -439,6 +449,7 @@ class PChatApp {
     const password = this.cleanPassword(rawPassword);
     let isPublic = isPublicCheck.checked;
     const enableHistory = enableHistoryCheck ? enableHistoryCheck.checked : true;
+    const enableAntiPeek = enableAntiPeekCheck ? enableAntiPeekCheck.checked : true;
 
     if (!password) {
       isPublic = true;
@@ -456,6 +467,7 @@ class PChatApp {
       passHash: passHash,
       isPublic: isPublic,
       enableHistory: enableHistory,
+      enableAntiPeek: enableAntiPeek,
       allowedIps: allowedIps,
       destroyDurationMinutes: durationMinutes,
       creatorAlias: 'Admin (' + this.myAlias + ')'
@@ -993,6 +1005,10 @@ class PChatApp {
     if (enableHistoryToggle) {
       enableHistoryToggle.checked = Boolean(this.currentRoom.enableHistory);
     }
+    const enableAntiPeekToggle = document.getElementById('adminEnableAntiPeek');
+    if (enableAntiPeekToggle) {
+      enableAntiPeekToggle.checked = this.currentRoom.enableAntiPeek !== undefined ? Boolean(this.currentRoom.enableAntiPeek) : true;
+    }
     document.getElementById('adminAllowedIps').value = (this.currentRoom.allowedIps || []).join(', ');
     document.getElementById('adminModal').classList.add('active');
   }
@@ -1006,6 +1022,7 @@ class PChatApp {
     const newPass = this.cleanPassword(rawPass);
     let isPublic = document.getElementById('adminIsPublic').checked;
     const enableHistory = document.getElementById('adminEnableHistory').checked;
+    const enableAntiPeek = document.getElementById('adminEnableAntiPeek').checked;
     const ips = document.getElementById('adminAllowedIps').value.split(',').map(s => s.trim()).filter(Boolean);
 
     if (!newPass) {
@@ -1021,6 +1038,7 @@ class PChatApp {
       passHash: passHash,
       isPublic: isPublic,
       enableHistory: enableHistory,
+      enableAntiPeek: enableAntiPeek,
       allowedIps: ips
     });
 

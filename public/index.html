@@ -132,6 +132,17 @@
             </label>
           </div>
 
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span class="toggle-title">启用窗口失焦防窥保护</span>
+              <span class="toggle-desc">开启后切屏、切Tab或窗口失焦时自动激活毛玻璃遮罩保护隐私</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="createEnableAntiPeek" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
           <div class="form-group">
             <label class="form-label">群组生命周期 (自动销毁时长)</label>
             <select id="createDestroyDuration" class="input-box">
@@ -371,6 +382,17 @@
         </div>
         <label class="switch">
           <input type="checkbox" id="adminEnableHistory">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-label">
+          <span class="toggle-title">启用窗口失焦防窥保护</span>
+          <span class="toggle-desc">开启后本群所有成员切屏失焦时激活防窥遮罩</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="adminEnableAntiPeek">
           <span class="slider"></span>
         </label>
       </div>

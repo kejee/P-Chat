@@ -198,7 +198,7 @@ wss.on('connection', (ws, req) => {
     switch (type) {
       // 1. Create Room
       case 'create_room': {
-        const { name, passHash, isPublic, allowedIps, destroyDurationMinutes, creatorAlias, enableHistory } = payload;
+        const { name, passHash, isPublic, allowedIps, destroyDurationMinutes, creatorAlias, enableHistory, enableAntiPeek } = payload;
 
         if (!name || typeof name !== 'string') {
           return ws.send(JSON.stringify({ type: 'error', code: 'INVALID_ROOM_NAME' }));
@@ -213,6 +213,7 @@ wss.on('connection', (ws, req) => {
         // If no password, room MUST be public
         const effectiveIsPublic = !passHash ? true : Boolean(isPublic);
         const effectiveEnableHistory = enableHistory !== undefined ? Boolean(enableHistory) : true;
+        const effectiveEnableAntiPeek = enableAntiPeek !== undefined ? Boolean(enableAntiPeek) : true;
 
         const newRoom = {
           id: roomId,
@@ -220,6 +221,7 @@ wss.on('connection', (ws, req) => {
           passHash: passHash || null,
           isPublic: effectiveIsPublic,
           enableHistory: effectiveEnableHistory,
+          enableAntiPeek: effectiveEnableAntiPeek,
           allowedIps: Array.isArray(allowedIps) ? allowedIps.filter(Boolean) : [],
           adminToken: adminToken,
           createdAt: now,
@@ -252,6 +254,7 @@ wss.on('connection', (ws, req) => {
             hasPassword: Boolean(newRoom.passHash),
             isPublic: newRoom.isPublic,
             enableHistory: newRoom.enableHistory,
+            enableAntiPeek: newRoom.enableAntiPeek,
             allowedIps: newRoom.allowedIps,
             destroyAt: newRoom.destroyAt,
             createdAt: newRoom.createdAt
@@ -334,6 +337,7 @@ wss.on('connection', (ws, req) => {
             hasPassword: Boolean(targetRoom.passHash),
             isPublic: targetRoom.isPublic,
             enableHistory: targetRoom.enableHistory,
+            enableAntiPeek: targetRoom.enableAntiPeek,
             allowedIps: targetRoom.allowedIps,
             destroyAt: targetRoom.destroyAt,
             createdAt: targetRoom.createdAt
@@ -497,7 +501,7 @@ wss.on('connection', (ws, req) => {
           return ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED' }));
         }
 
-        const { passHash, isPublic, allowedIps, enableHistory } = payload;
+        const { passHash, isPublic, allowedIps, enableHistory, enableAntiPeek } = payload;
 
         if (passHash !== undefined) {
           room.passHash = passHash || null;
@@ -517,6 +521,10 @@ wss.on('connection', (ws, req) => {
           }
         }
 
+        if (enableAntiPeek !== undefined) {
+          room.enableAntiPeek = Boolean(enableAntiPeek);
+        }
+
         if (Array.isArray(allowedIps)) {
           room.allowedIps = allowedIps.filter(Boolean);
         }
@@ -527,6 +535,7 @@ wss.on('connection', (ws, req) => {
             hasPassword: Boolean(room.passHash),
             isPublic: room.isPublic,
             enableHistory: room.enableHistory,
+            enableAntiPeek: room.enableAntiPeek,
             allowedIps: room.allowedIps
           }
         });
