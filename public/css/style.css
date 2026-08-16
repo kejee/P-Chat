@@ -361,31 +361,43 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 12px 14px;
   background: rgba(0, 0, 0, 0.25);
   border-radius: var(--radius-sm);
   margin-bottom: 12px;
   border: 1px solid var(--border-color);
+  gap: 14px;
 }
 
 .toggle-label {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 3px;
 }
 .toggle-title {
-  font-size: 0.85rem;
+  font-size: 0.88rem;
   font-weight: 600;
+  word-break: break-word;
 }
 .toggle-desc {
   font-size: 0.72rem;
   color: var(--text-muted);
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .switch {
   position: relative;
   display: inline-block;
   width: 44px;
+  min-width: 44px;
+  max-width: 44px;
   height: 24px;
+  min-height: 24px;
+  flex: 0 0 44px;
+  flex-shrink: 0;
 }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider {
@@ -1060,6 +1072,7 @@ input.input-box::placeholder {
   body:has(#chatView.active) {
     overflow: hidden !important;
     height: 100% !important;
+    height: -webkit-fill-available !important;
     height: 100dvh !important;
     position: fixed !important;
     width: 100% !important;
@@ -1079,7 +1092,9 @@ input.input-box::placeholder {
     padding: 0 !important;
     margin: 0 !important;
     max-width: 100% !important;
+    width: 100% !important;
     height: 100% !important;
+    height: -webkit-fill-available !important;
     height: 100dvh !important;
     display: flex !important;
     flex-direction: column !important;
@@ -1088,36 +1103,48 @@ input.input-box::placeholder {
   body.in-chat-view #chatView,
   body:has(#chatView.active) #chatView {
     height: 100% !important;
+    height: -webkit-fill-available !important;
     height: 100dvh !important;
-    flex: 1 !important;
+    width: 100% !important;
+    flex: 1 1 0% !important;
     display: flex !important;
     flex-direction: column !important;
     min-height: 0 !important;
     padding: 0 !important;
+    margin: 0 !important;
   }
 
   body.in-chat-view .chat-container,
   body:has(#chatView.active) .chat-container {
     height: 100% !important;
+    height: -webkit-fill-available !important;
     height: 100dvh !important;
-    flex: 1 !important;
+    width: 100% !important;
+    flex: 1 1 0% !important;
     display: flex !important;
     flex-direction: column !important;
     border-radius: 0 !important;
     border: none !important;
     min-height: 0 !important;
+    max-height: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    gap: 0 !important;
   }
 
   body.in-chat-view .chat-main,
   body:has(#chatView.active) .chat-main {
     border-radius: 0 !important;
     border: none !important;
+    width: 100% !important;
     height: 100% !important;
+    height: -webkit-fill-available !important;
     height: 100dvh !important;
-    flex: 1 !important;
+    flex: 1 1 0% !important;
     display: flex !important;
     flex-direction: column !important;
     min-height: 0 !important;
+    max-height: 100% !important;
     overflow: hidden !important;
   }
 
