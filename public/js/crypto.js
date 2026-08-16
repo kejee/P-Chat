@@ -6,9 +6,12 @@
  * - AES-256-GCM (Authenticated Encryption with 96-bit unique IV & 128-bit auth tag)
  * - SHA-256 for zero-knowledge server hash verifier
  * - Zero-Copy Native Binary ArrayBuffer Frame Protocol (0% Base64 Overhead)
+ * - 256KB Chunked E2EE Stream Engine for Zero Server RAM Footprint
  */
 
 class PCrypto {
+  static CHUNK_SIZE = 256 * 1024; // 256KB micro-chunks
+
   static isAvailable() {
     return Boolean(window.crypto && window.crypto.subtle);
   }
@@ -88,23 +91,14 @@ class PCrypto {
   }
 
   /**
-   * Raw Binary Pack: Packs Metadata + Native Encrypted Binary into 1:1 Wire Frame
-   * Protocol Format:
-   * [0..3]   : Magic "PCHT" (4B)
-   * [4..15]  : 12-byte random IV (12B)
-   * [16..19] : Meta JSON length (4B Uint32BE)
-   * [20..20+metaLen-1] : UTF-8 Meta JSON
-   * [20+metaLen..end]  : AES-256-GCM Ciphertext ArrayBuffer
+   * Single Binary Frame Protocol (Magic: "PCHT")
    */
   static async packBinaryFrame(metaObject, plainBuffer, cryptoKey) {
-    if (!PCrypto.isAvailable()) {
-      throw new Error('WebCrypto_Unavailable');
-    }
+    if (!PCrypto.isAvailable()) throw new Error('WebCrypto_Unavailable');
 
     const iv = new Uint8Array(12);
     crypto.getRandomValues(iv);
 
-    // Encrypt raw ArrayBuffer
     const cipherBuffer = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv: iv },
       cryptoKey,
@@ -117,13 +111,13 @@ class PCrypto {
     const totalLen = 4 + 12 + 4 + metaLen + cipherBuffer.byteLength;
     const packet = new Uint8Array(totalLen);
 
-    // 1. Magic
-    packet[0] = 0x50; packet[1] = 0x43; packet[2] = 0x48; packet[3] = 0x54; // "PCHT"
+    // 1. Magic "PCHT"
+    packet[0] = 0x50; packet[1] = 0x43; packet[2] = 0x48; packet[3] = 0x54;
     // 2. IV
     packet.set(iv, 4);
     // 3. Meta Length
     const view = new DataView(packet.buffer);
-    view.setUint32(16, metaLen, false); // Big-Endian
+    view.setUint32(16, metaLen, false);
     // 4. Meta Bytes
     packet.set(metaBytes, 20);
     // 5. Ciphertext
@@ -132,14 +126,10 @@ class PCrypto {
     return packet.buffer;
   }
 
-  /**
-   * Unpack Binary Frame Header and Extract Ciphertext
-   */
   static unpackBinaryFrame(arrayBuffer) {
     const view = new DataView(arrayBuffer);
     if (view.byteLength < 20) return null;
 
-    // Check magic
     if (view.getUint8(0) !== 0x50 || view.getUint8(1) !== 0x43 ||
         view.getUint8(2) !== 0x48 || view.getUint8(3) !== 0x54) {
       return null;
@@ -147,29 +137,74 @@ class PCrypto {
 
     const iv = new Uint8Array(arrayBuffer, 4, 12);
     const metaLen = view.getUint32(16, false);
-
     if (view.byteLength < 20 + metaLen) return null;
 
     const metaBytes = new Uint8Array(arrayBuffer, 20, metaLen);
-    const metaJson = new TextDecoder().decode(metaBytes);
-    const meta = JSON.parse(metaJson);
-
+    const meta = JSON.parse(new TextDecoder().decode(metaBytes));
     const cipherBuffer = arrayBuffer.slice(20 + metaLen);
 
-    return {
-      iv: iv,
-      meta: meta,
-      cipherBuffer: cipherBuffer
-    };
+    return { iv, meta, cipherBuffer };
   }
 
   /**
-   * Decrypt Native Binary Ciphertext into Plain ArrayBuffer
+   * 256KB Chunk Frame Protocol (Magic: "PCCK")
+   * Used for streaming large media files with zero server memory footprint
    */
-  static async decryptBinary(ivUint8Array, cipherArrayBuffer, cryptoKey) {
-    if (!PCrypto.isAvailable()) {
-      throw new Error('WebCrypto_Unavailable');
+  static async packChunkFrame(metaObject, chunkBuffer, cryptoKey) {
+    if (!PCrypto.isAvailable()) throw new Error('WebCrypto_Unavailable');
+
+    const iv = new Uint8Array(12);
+    crypto.getRandomValues(iv);
+
+    const cipherBuffer = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      cryptoKey,
+      chunkBuffer
+    );
+
+    const metaBytes = new TextEncoder().encode(JSON.stringify(metaObject));
+    const metaLen = metaBytes.length;
+
+    const totalLen = 4 + 12 + 4 + metaLen + cipherBuffer.byteLength;
+    const packet = new Uint8Array(totalLen);
+
+    // 1. Magic "PCCK"
+    packet[0] = 0x50; packet[1] = 0x43; packet[2] = 0x43; packet[3] = 0x4B;
+    // 2. IV
+    packet.set(iv, 4);
+    // 3. Meta Length
+    const view = new DataView(packet.buffer);
+    view.setUint32(16, metaLen, false);
+    // 4. Meta Bytes
+    packet.set(metaBytes, 20);
+    // 5. Ciphertext Chunk
+    packet.set(new Uint8Array(cipherBuffer), 20 + metaLen);
+
+    return packet.buffer;
+  }
+
+  static unpackChunkFrame(arrayBuffer) {
+    const view = new DataView(arrayBuffer);
+    if (view.byteLength < 20) return null;
+
+    if (view.getUint8(0) !== 0x50 || view.getUint8(1) !== 0x43 ||
+        view.getUint8(2) !== 0x43 || view.getUint8(3) !== 0x4B) {
+      return null;
     }
+
+    const iv = new Uint8Array(arrayBuffer, 4, 12);
+    const metaLen = view.getUint32(16, false);
+    if (view.byteLength < 20 + metaLen) return null;
+
+    const metaBytes = new Uint8Array(arrayBuffer, 20, metaLen);
+    const meta = JSON.parse(new TextDecoder().decode(metaBytes));
+    const cipherBuffer = arrayBuffer.slice(20 + metaLen);
+
+    return { iv, meta, cipherBuffer };
+  }
+
+  static async decryptBinary(ivUint8Array, cipherArrayBuffer, cryptoKey) {
+    if (!PCrypto.isAvailable()) throw new Error('WebCrypto_Unavailable');
     return await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: ivUint8Array },
       cryptoKey,

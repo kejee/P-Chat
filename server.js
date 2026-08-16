@@ -139,21 +139,23 @@ wss.on('connection', (ws, req) => {
   ws.alias = 'Anonymous';
 
   ws.on('message', (raw, isBinary) => {
-    // 1. Check for Native Binary Frame ("PCHT" Magic header)
+    // 1. Check for Native Binary Frames: "PCHT" (Single packet) or "PCCK" (256KB Chunk stream)
     if (Buffer.isBuffer(raw) && raw.length >= 20 &&
-        raw[0] === 0x50 && raw[1] === 0x43 && raw[2] === 0x48 && raw[3] === 0x54) {
+        ((raw[0] === 0x50 && raw[1] === 0x43 && raw[2] === 0x48 && raw[3] === 0x54) || // "PCHT"
+         (raw[0] === 0x50 && raw[1] === 0x43 && raw[2] === 0x43 && raw[3] === 0x4B))) { // "PCCK"
       if (!ws.roomId) return;
       const room = rooms.get(ws.roomId);
       if (!room) return;
 
       try {
+        const isChunkFrame = (raw[2] === 0x43 && raw[3] === 0x4B);
         const metaLen = raw.readUInt32BE(16);
         if (raw.length < 20 + metaLen) return;
         const metaJson = raw.subarray(20, 20 + metaLen).toString('utf8');
         const meta = JSON.parse(metaJson);
 
-        // Register burn tracker if requested
-        if (meta.isBurn && meta.burnConfig) {
+        // Register burn tracker if requested (only once on first chunk or single packet)
+        if (meta.isBurn && meta.burnConfig && (!isChunkFrame || meta.chunkIndex === 0)) {
           room.burnMessages.set(meta.msgId, {
             senderWs: ws,
             type: meta.burnConfig.type || 'timer',
@@ -165,15 +167,15 @@ wss.on('connection', (ws, req) => {
           });
         }
 
-        // Cache into RAM history ring buffer (max 30 entries)
-        if (room.enableHistory && !meta.isBurn) {
+        // Cache into RAM history ring buffer (only single lightweight packets, exclude heavy chunks from history memory)
+        if (!isChunkFrame && room.enableHistory && !meta.isBurn) {
           room.messageHistory.push({ isBinary: true, rawBuffer: raw, msgId: meta.msgId });
           if (room.messageHistory.length > 30) {
             room.messageHistory.shift();
           }
         }
 
-        // Instant Zero-Copy Broadcast ONLY to peers (exclude sender to prevent double memory explosion)
+        // Instant Zero-Copy Stream Broadcast ONLY to peers (256KB micro-pipe, 0 memory footprint)
         for (const client of room.clients) {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
             client.send(raw, { binary: true });

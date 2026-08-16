@@ -1,6 +1,9 @@
 /**
  * P-Chat Main Application Controller
- * High-Performance Native Binary ArrayBuffer Protocol (Zero Base64 Overhead)
+ * Features:
+ * - 256KB Chunked E2EE Stream Engine for Zero Server RAM Footprint
+ * - WeChat-Style Optimistic Instant UI with Inline Progress & Failure Retry
+ * - AES-256-GCM + PBKDF2 Zero-Knowledge Security
  */
 
 class PChatApp {
@@ -17,6 +20,8 @@ class PChatApp {
     this.activeBurnIntervals = new Map(); // msgId -> interval
     this.revealedBurnMessages = new Set(); // msgId set
     this.burnBinaryStore = new Map(); // msgId -> { iv, cipherBuffer, meta }
+    this.incomingChunkStore = new Map(); // msgId -> { meta, chunks: [], totalChunks, receivedCount }
+    this.pendingRetries = new Map(); // msgId -> messageDataObject
     this.isPrivacyShieldLocked = false;
     this.pendingAttachment = null; // { name, size, type, mimeType, fileBlob, previewUrl }
 
@@ -71,7 +76,6 @@ class PChatApp {
   }
 
   bindKeyboardShortcuts() {
-    // 1. Chat Textarea (Shift+Enter to send, Enter to newline)
     const chatInput = document.getElementById('chatMsgInput');
     if (chatInput) {
       chatInput.addEventListener('keydown', (e) => {
@@ -84,7 +88,6 @@ class PChatApp {
       });
     }
 
-    // 2. Join Password Input (Enter to join)
     const joinPassInput = document.getElementById('joinPasswordInput');
     if (joinPassInput) {
       joinPassInput.addEventListener('keydown', (e) => {
@@ -105,7 +108,6 @@ class PChatApp {
       });
     }
 
-    // 3. Prompt Password Modal Input (Enter to confirm)
     const promptPassInput = document.getElementById('promptPassInput');
     if (promptPassInput) {
       promptPassInput.addEventListener('keydown', (e) => {
@@ -212,8 +214,8 @@ class PChatApp {
   }
 
   processFileForAttachment(file, defaultName) {
-    if (file.size > 80 * 1024 * 1024) {
-      return alert('⚠️ 文件体积过大，单次附件请限制在 80MB 以内。');
+    if (file.size > 100 * 1024 * 1024) {
+      return alert('⚠️ 文件体积过大，单次附件请限制在 100MB 以内。');
     }
 
     let mediaType = 'file';
@@ -253,7 +255,7 @@ class PChatApp {
         <img src="${this.pendingAttachment.previewUrl}" style="width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--accent-cyan);">
         <div>
           <div style="font-weight: 600;">已捕获图片: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 256KB 微分块流加密就绪</div>
         </div>
       `;
     } else if (this.pendingAttachment.type === 'video') {
@@ -261,7 +263,7 @@ class PChatApp {
         <i data-lucide="video" style="width: 24px; height: 24px; color: var(--accent-cyan);"></i>
         <div>
           <div style="font-weight: 600;">已选定视频: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 256KB 微分块流加密就绪</div>
         </div>
       `;
     } else {
@@ -269,7 +271,7 @@ class PChatApp {
         <i data-lucide="file" style="width: 24px; height: 24px; color: var(--accent-cyan);"></i>
         <div>
           <div style="font-weight: 600;">已选定文件: ${this.escapeHtml(this.pendingAttachment.name)}</div>
-          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 纯二进制原生流传输</div>
+          <div style="font-size: 0.7rem; color: var(--text-muted);">${this.formatFileSize(this.pendingAttachment.size)} · 256KB 微分块流加密就绪</div>
         </div>
       `;
     }
@@ -309,9 +311,9 @@ class PChatApp {
     PSocket.on('connected', () => this.setWsStatus(true));
     PSocket.on('disconnected', () => this.setWsStatus(false));
 
-    // Native Binary Message Received
+    // Handle Incoming Binary Frames (Single Packet or 256KB Chunk Stream)
     PSocket.on('binary_message', async (arrayBuffer) => {
-      await this.handleIncomingBinaryFrame(arrayBuffer);
+      await this.dispatchIncomingBinaryFrame(arrayBuffer);
     });
 
     PSocket.on('room_created', (payload) => {
@@ -558,7 +560,7 @@ class PChatApp {
     this.clearAttachment();
     document.getElementById('messageStream').innerHTML = `
       <div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 12px 0;">
-        🔒 原生二进制端到端加密隧道已建立。数据在离开本机前完成加密，服务器仅进行二进制盲中继。
+        🔒 256KB 微分块流式端到端加密隧道已就绪 · 服务端零内存积压 · 零写盘
       </div>
     `;
 
@@ -607,6 +609,8 @@ class PChatApp {
     this.adminToken = null;
     this.revealedBurnMessages = new Set();
     this.burnBinaryStore.clear();
+    this.incomingChunkStore.clear();
+    this.pendingRetries.clear();
     this.clearAttachment();
 
     document.getElementById('chatView').classList.remove('active');
@@ -674,36 +678,9 @@ class PChatApp {
     document.getElementById('burnViewsInputGroup').style.display = type === 'views' ? 'inline-flex' : 'none';
   }
 
-  showSendProgress(statusText, percent) {
-    const container = document.getElementById('uploadProgressBarContainer');
-    const status = document.getElementById('uploadProgressStatusText');
-    const percentElem = document.getElementById('uploadProgressPercentText');
-    const fill = document.getElementById('uploadProgressBarFill');
-
-    if (container) container.style.display = 'block';
-    if (status) status.innerHTML = `<i data-lucide="loader-2" class="spin-anim" style="width: 12px; height: 12px; vertical-align: middle;"></i> ${statusText}`;
-    if (percentElem) percentElem.innerText = `${percent}%`;
-    if (fill) fill.style.width = `${percent}%`;
-    this.initIcons();
-  }
-
-  updateSendProgress(statusText, percent) {
-    const status = document.getElementById('uploadProgressStatusText');
-    const percentElem = document.getElementById('uploadProgressPercentText');
-    const fill = document.getElementById('uploadProgressBarFill');
-
-    if (status) status.innerHTML = `<i data-lucide="loader-2" class="spin-anim" style="width: 12px; height: 12px; vertical-align: middle;"></i> ${statusText}`;
-    if (percentElem) percentElem.innerText = `${percent}%`;
-    if (fill) fill.style.width = `${percent}%`;
-    this.initIcons();
-  }
-
-  hideSendProgress() {
-    const container = document.getElementById('uploadProgressBarContainer');
-    if (container) container.style.display = 'none';
-  }
-
-  // Send Message via Native Binary ArrayBuffer Frame (0% Base64 Overhead)
+  /**
+   * WeChat-Style Instant Send with Optimistic UI & 256KB Chunked Streaming
+   */
   async sendMessage() {
     const input = document.getElementById('chatMsgInput');
     const text = input.value.trim();
@@ -723,117 +700,283 @@ class PChatApp {
       };
     }
 
-    try {
-      const msgId = 'msg-' + Math.random().toString(36).substring(2, 11);
-      const isMedia = Boolean(attachment);
+    const msgId = 'msg-' + Math.random().toString(36).substring(2, 11);
+    const messageData = {
+      msgId: msgId,
+      text: text,
+      attachment: attachment ? { ...attachment } : null,
+      isBurn: isBurn,
+      burnConfig: burnConfig,
+      timestamp: Date.now()
+    };
 
-      if (isMedia) {
-        this.showSendProgress(`正在读取 ${this.escapeHtml(attachment.name)}...`, 20);
-      }
+    // 1. Instant Optimistic UI: Render bubble immediately into stream
+    this.renderOptimisticSendingBubble(messageData);
 
-      let payloadBuffer;
-      let metaObject = {
-        msgId: msgId,
-        senderAlias: this.myAlias,
-        timestamp: Date.now(),
-        isBurn: isBurn,
-        burnConfig: burnConfig,
-        text: text || '',
-        hasMedia: isMedia
-      };
+    // 2. Clear inputs immediately & refocus
+    input.value = '';
+    this.clearAttachment();
+    input.focus();
 
-      if (isMedia) {
-        this.updateSendProgress('正在进行原生硬件级 AES-256-GCM 二进制加密...', 50);
-        metaObject.mediaMeta = {
-          name: attachment.name,
-          size: attachment.size,
-          type: attachment.type,
-          mimeType: attachment.mimeType
-        };
-        payloadBuffer = await attachment.fileBlob.arrayBuffer();
-      } else {
-        payloadBuffer = new TextEncoder().encode(text);
-      }
-
-      // Pack binary frame
-      if (isMedia) {
-        this.updateSendProgress('正在封装零拷贝二进制流...', 80);
-      }
-      const packet = await PCrypto.packBinaryFrame(metaObject, payloadBuffer, this.currentKey);
-
-      // Send binary frame directly to WebSocket
-      PSocket.sendBinary(packet);
-
-      // Instantly render own message locally (Zero Network Loopback Delay & 0 Extra Downlink Traffic)
-      this.renderOwnMessageLocally(metaObject, payloadBuffer, packet);
-
-      if (isMedia) {
-        this.updateSendProgress('发送完成！', 100);
-        setTimeout(() => this.hideSendProgress(), 300);
-      }
-
-      input.value = '';
-      this.clearAttachment();
-      input.focus();
-    } catch (err) {
-      console.error('[PChat] Failed to send binary message:', err);
-      alert('⚠️ 发送失败: ' + (err.message || err));
-      this.hideSendProgress();
-    }
+    // 3. Pump transmission pipeline
+    this.executeSendPipeline(messageData);
   }
 
-  // Render sender's own message locally without waiting or downloading from server
-  renderOwnMessageLocally(meta, plainBuffer, packet) {
+  // Render optimistic message bubble on screen with progress bar
+  renderOptimisticSendingBubble(messageData) {
     const stream = document.getElementById('messageStream');
-    const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeStr = new Date(messageData.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble own';
-    bubble.id = meta.msgId;
+    bubble.id = messageData.msgId;
 
-    if (meta.isBurn) {
-      const frame = PCrypto.unpackBinaryFrame(packet);
-      if (frame) {
-        this.burnBinaryStore.set(meta.msgId, frame);
-      }
-      const burnHint = meta.burnConfig?.type === 'views'
-        ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
-        : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
-
-      bubble.innerHTML = `
-        <div class="msg-meta">
-          <span>${this.escapeHtml(meta.senderAlias)}</span>
-          <span>${timeStr}</span>
-        </div>
-        <div class="msg-content-card msg-burn-card" id="card-${meta.msgId}" onclick="app.revealBurnMessage('${meta.msgId}', true)">
-          <div class="burn-shield-overlay" id="burnMask-${meta.msgId}">
-            <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
-            <span>${burnHint} · 发件人点击预览</span>
+    let contentHtml = '';
+    if (messageData.attachment) {
+      const att = messageData.attachment;
+      if (att.type === 'image') {
+        contentHtml += `<img src="${att.previewUrl}" class="media-img-preview" style="filter: brightness(0.85);" alt="发送预览">`;
+      } else if (att.type === 'video') {
+        contentHtml += `<video src="${att.previewUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
+      } else {
+        contentHtml += `
+          <div class="file-attachment-card">
+            <div class="file-icon-box"><i data-lucide="file" style="width: 20px; height: 20px;"></i></div>
+            <div class="file-info-text">
+              <span class="file-name-text">${this.escapeHtml(att.name)}</span>
+              <span class="file-size-text">${this.formatFileSize(att.size)}</span>
+            </div>
           </div>
-          <div class="burn-text" id="burnText-${meta.msgId}" style="display: none;"></div>
-          <div class="burn-timer-bar" id="burnBar-${meta.msgId}" style="width: 0%;"></div>
-        </div>
-      `;
-    } else {
-      const renderedHtml = this.renderBinaryContentHtml(meta, plainBuffer);
-      bubble.innerHTML = `
-        <div class="msg-meta">
-          <span>${this.escapeHtml(meta.senderAlias)}</span>
-          <span>${timeStr}</span>
-        </div>
-        <div class="msg-content-card">
-          ${renderedHtml}
-        </div>
-      `;
+        `;
+      }
     }
+
+    if (messageData.text) {
+      contentHtml += `<div style="white-space: pre-wrap; ${messageData.attachment ? 'margin-top: 8px;' : ''}">${this.escapeHtml(messageData.text)}</div>`;
+    }
+
+    bubble.innerHTML = `
+      <div class="msg-meta">
+        <span>${this.escapeHtml(this.myAlias)}</span>
+        <span>${timeStr}</span>
+        <span class="msg-sending-tag" id="statusTag-${messageData.msgId}">
+          <i data-lucide="loader-2" class="spin-anim" style="width: 10px; height: 10px;"></i> 正在加密发送...
+        </span>
+      </div>
+      <div class="msg-content-card" id="contentCard-${messageData.msgId}">
+        ${contentHtml}
+        <div class="msg-inline-status" id="inlineStatus-${messageData.msgId}">
+          <div style="display: flex; justify-content: space-between; font-size: 0.7rem;">
+            <span id="progressText-${messageData.msgId}">正在准备微流加密...</span>
+            <span id="progressPercent-${messageData.msgId}">0%</span>
+          </div>
+          <div class="msg-progress-track">
+            <div class="msg-progress-fill" id="progressFill-${messageData.msgId}" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+    `;
 
     stream.appendChild(bubble);
     stream.scrollTop = stream.scrollHeight;
     this.initIcons();
   }
 
-  // Handle Incoming Binary Frame (Live message or History replay)
-  async handleIncomingBinaryFrame(arrayBuffer) {
+  // Update sending progress inside the bubble
+  updateBubbleProgress(msgId, percent, statusText) {
+    const fill = document.getElementById(`progressFill-${msgId}`);
+    const pct = document.getElementById(`progressPercent-${msgId}`);
+    const txt = document.getElementById(`progressText-${msgId}`);
+    if (fill) fill.style.width = `${percent}%`;
+    if (pct) pct.innerText = `${percent}%`;
+    if (txt) txt.innerText = statusText;
+  }
+
+  // Mark bubble as sent successfully
+  markBubbleSuccess(msgId) {
+    const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
+    const statusTag = document.getElementById(`statusTag-${msgId}`);
+    if (inlineStatus) inlineStatus.style.display = 'none';
+    if (statusTag) {
+      statusTag.innerHTML = `<span style="color: var(--accent-green);">已送达</span>`;
+      setTimeout(() => {
+        if (statusTag) statusTag.style.display = 'none';
+      }, 2000);
+    }
+  }
+
+  // Mark bubble as failed with one-click retry button
+  markBubbleFailed(msgId, errMessage) {
+    const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
+    const statusTag = document.getElementById(`statusTag-${msgId}`);
+    if (statusTag) {
+      statusTag.innerHTML = `<span style="color: var(--accent-red); font-weight: bold;">⚠️ 发送失败</span>`;
+    }
+    if (inlineStatus) {
+      inlineStatus.innerHTML = `
+        <div class="msg-failed-wrapper">
+          <span>❌ 发送中断 (${this.escapeHtml(errMessage || '网络异常')})</span>
+          <button class="msg-retry-btn" onclick="app.retrySendMessage('${msgId}')">
+            <i data-lucide="rotate-cw" style="width: 10px; height: 10px;"></i> 重试
+          </button>
+        </div>
+      `;
+      this.initIcons();
+    }
+  }
+
+  // Retry sending failed message
+  retrySendMessage(msgId) {
+    const messageData = this.pendingRetries.get(msgId);
+    if (!messageData) return;
+
+    // Reset bubble UI to sending
+    const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
+    const statusTag = document.getElementById(`statusTag-${msgId}`);
+    if (statusTag) {
+      statusTag.innerHTML = `<i data-lucide="loader-2" class="spin-anim" style="width: 10px; height: 10px;"></i> 正在重新发送...`;
+    }
+    if (inlineStatus) {
+      inlineStatus.innerHTML = `
+        <div style="display: flex; justify-content: space-between; font-size: 0.7rem;">
+          <span id="progressText-${msgId}">重新加密传输中...</span>
+          <span id="progressPercent-${msgId}">0%</span>
+        </div>
+        <div class="msg-progress-track">
+          <div class="msg-progress-fill" id="progressFill-${msgId}" style="width: 0%;"></div>
+        </div>
+      `;
+      this.initIcons();
+    }
+
+    this.executeSendPipeline(messageData);
+  }
+
+  // Core Sending Pipeline (Handles both single frames and 256KB Chunked stream)
+  async executeSendPipeline(messageData) {
+    const { msgId, text, attachment, isBurn, burnConfig, timestamp } = messageData;
+    this.pendingRetries.set(msgId, messageData);
+
+    try {
+      if (!PSocket.isConnected) {
+        throw new Error('网络连接已断开，请检查网络');
+      }
+
+      const hasMedia = Boolean(attachment);
+      const CHUNK_SIZE = PCrypto.CHUNK_SIZE; // 256KB
+
+      // Case 1: Pure text or tiny attachment (<= 256KB) -> Single Unified Binary Frame
+      if (!hasMedia || attachment.size <= CHUNK_SIZE) {
+        this.updateBubbleProgress(msgId, 30, '正在生成 AES-256-GCM 密文...');
+
+        let payloadBuffer;
+        let meta = {
+          msgId: msgId,
+          senderAlias: this.myAlias,
+          timestamp: timestamp,
+          isBurn: isBurn,
+          burnConfig: burnConfig,
+          text: text || '',
+          hasMedia: hasMedia
+        };
+
+        if (hasMedia) {
+          meta.mediaMeta = {
+            name: attachment.name,
+            size: attachment.size,
+            type: attachment.type,
+            mimeType: attachment.mimeType
+          };
+          payloadBuffer = await attachment.fileBlob.arrayBuffer();
+        } else {
+          payloadBuffer = new TextEncoder().encode(text);
+        }
+
+        const packet = await PCrypto.packBinaryFrame(meta, payloadBuffer, this.currentKey);
+        this.updateBubbleProgress(msgId, 80, '正在极速传输...');
+
+        PSocket.sendBinary(packet);
+        this.updateBubbleProgress(msgId, 100, '发送完成');
+        this.markBubbleSuccess(msgId);
+        this.pendingRetries.delete(msgId);
+        return;
+      }
+
+      // Case 2: Large Media (> 256KB) -> 256KB Micro-Chunk E2EE Stream Engine
+      const totalChunks = Math.ceil(attachment.size / CHUNK_SIZE);
+      const fileBlob = attachment.fileBlob;
+
+      for (let i = 0; i < totalChunks; i++) {
+        if (!PSocket.isConnected) {
+          throw new Error('传输过程中连接中断');
+        }
+
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(attachment.size, start + CHUNK_SIZE);
+        const sliceBlob = fileBlob.slice(start, end);
+        const chunkArrayBuffer = await sliceBlob.arrayBuffer();
+
+        const chunkMeta = {
+          msgId: msgId,
+          senderAlias: this.myAlias,
+          timestamp: timestamp,
+          isBurn: isBurn,
+          burnConfig: burnConfig,
+          text: (i === 0) ? (text || '') : '', // Text sent with first chunk
+          chunkIndex: i,
+          totalChunks: totalChunks,
+          isLast: (i === totalChunks - 1),
+          mediaMeta: {
+            name: attachment.name,
+            size: attachment.size,
+            type: attachment.type,
+            mimeType: attachment.mimeType
+          }
+        };
+
+        const chunkPacket = await PCrypto.packChunkFrame(chunkMeta, chunkArrayBuffer, this.currentKey);
+        PSocket.sendBinary(chunkPacket);
+
+        const currentPct = Math.round(((i + 1) / totalChunks) * 100);
+        this.updateBubbleProgress(msgId, currentPct, `正在分块加密传输 (${i + 1}/${totalChunks} 块)...`);
+
+        // Micro-yield to prevent browser main-thread lag
+        if (totalChunks > 4 && i % 2 === 0) {
+          await new Promise(r => setTimeout(r, 8));
+        }
+      }
+
+      this.updateBubbleProgress(msgId, 100, '传输完成！');
+      this.markBubbleSuccess(msgId);
+      this.pendingRetries.delete(msgId);
+    } catch (err) {
+      console.error('[PChat] Send pipeline failed:', err);
+      this.markBubbleFailed(msgId, err.message || '网络中断');
+    }
+  }
+
+  // Dispatch incoming live binary frames (Single or Chunks)
+  async dispatchIncomingBinaryFrame(arrayBuffer) {
+    const view = new DataView(arrayBuffer);
+    if (view.byteLength < 20) return;
+
+    // Check if Single Packet ("PCHT")
+    if (view.getUint8(0) === 0x50 && view.getUint8(1) === 0x43 &&
+        view.getUint8(2) === 0x48 && view.getUint8(3) === 0x54) {
+      await this.handleIncomingSingleFrame(arrayBuffer);
+      return;
+    }
+
+    // Check if 256KB Chunk Packet ("PCCK")
+    if (view.getUint8(0) === 0x50 && view.getUint8(1) === 0x43 &&
+        view.getUint8(2) === 0x43 && view.getUint8(3) === 0x4B) {
+      await this.handleIncomingChunkFrame(arrayBuffer);
+      return;
+    }
+  }
+
+  // Handle Single Unified Binary Frame
+  async handleIncomingSingleFrame(arrayBuffer) {
     try {
       const frame = PCrypto.unpackBinaryFrame(arrayBuffer);
       if (!frame) return;
@@ -848,9 +991,7 @@ class PChatApp {
       bubble.id = meta.msgId;
 
       if (meta.isBurn) {
-        // Store cipherBuffer for on-demand reveal
-        this.burnBinaryStore.set(meta.msgId, { iv, cipherBuffer, meta });
-
+        this.burnBinaryStore.set(meta.msgId, { iv, cipherBuffer, meta, isChunked: false });
         const burnHint = meta.burnConfig?.type === 'views'
           ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
           : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
@@ -870,7 +1011,6 @@ class PChatApp {
           </div>
         `;
       } else {
-        // Instant decrypt
         const plainBuffer = await PCrypto.decryptBinary(iv, cipherBuffer, this.currentKey);
         const renderedHtml = this.renderBinaryContentHtml(meta, plainBuffer);
 
@@ -889,11 +1029,160 @@ class PChatApp {
       stream.scrollTop = stream.scrollHeight;
       this.initIcons();
     } catch (err) {
-      console.error('[PChat] Decrypt binary frame failed:', err);
+      console.error('[PChat] Decrypt single frame failed:', err);
     }
   }
 
-  // Helper to render Decrypted Plain Buffer into visual DOM elements
+  // Handle Incoming 256KB Chunked Stream Frames
+  async handleIncomingChunkFrame(arrayBuffer) {
+    try {
+      const frame = PCrypto.unpackChunkFrame(arrayBuffer);
+      if (!frame) return;
+
+      const { iv, meta, cipherBuffer } = frame;
+      const msgId = meta.msgId;
+      const isOwn = meta.senderAlias.includes(this.myAlias);
+      const stream = document.getElementById('messageStream');
+      const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      // If Burn After Reading, collect encrypted chunks for on-demand decryption
+      if (meta.isBurn) {
+        let burnRecord = this.burnBinaryStore.get(msgId);
+        if (!burnRecord) {
+          burnRecord = {
+            meta: meta,
+            isChunked: true,
+            totalChunks: meta.totalChunks,
+            chunks: new Array(meta.totalChunks)
+          };
+          this.burnBinaryStore.set(msgId, burnRecord);
+
+          // Render Burn Card on first chunk
+          const burnBubble = document.createElement('div');
+          burnBubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
+          burnBubble.id = msgId;
+
+          const burnHint = meta.burnConfig?.type === 'views'
+            ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
+            : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
+
+          burnBubble.innerHTML = `
+            <div class="msg-meta">
+              <span>${this.escapeHtml(meta.senderAlias)}</span>
+              <span>${timeStr}</span>
+            </div>
+            <div class="msg-content-card msg-burn-card" id="card-${msgId}" onclick="app.revealBurnMessage('${msgId}', ${isOwn})">
+              <div class="burn-shield-overlay" id="burnMask-${msgId}">
+                <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+                <span>${burnHint} · ${isOwn ? '发件人点击预览' : '点击解密查看'}</span>
+              </div>
+              <div class="burn-text" id="burnText-${msgId}" style="display: none;"></div>
+              <div class="burn-timer-bar" id="burnBar-${msgId}" style="width: 0%;"></div>
+            </div>
+          `;
+          stream.appendChild(burnBubble);
+          stream.scrollTop = stream.scrollHeight;
+          this.initIcons();
+        }
+
+        burnRecord.chunks[meta.chunkIndex] = { iv, cipherBuffer };
+        return;
+      }
+
+      // Normal Message Chunk Flow: Decrypt chunk on the fly
+      let session = this.incomingChunkStore.get(msgId);
+      if (!session) {
+        session = {
+          meta: meta,
+          totalChunks: meta.totalChunks,
+          receivedCount: 0,
+          plainChunks: new Array(meta.totalChunks)
+        };
+        this.incomingChunkStore.set(msgId, session);
+
+        // Render receiver's streaming bubble on first chunk
+        const bubble = document.createElement('div');
+        bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
+        bubble.id = msgId;
+
+        bubble.innerHTML = `
+          <div class="msg-meta">
+            <span>${this.escapeHtml(meta.senderAlias)}</span>
+            <span>${timeStr}</span>
+          </div>
+          <div class="msg-content-card" id="card-${msgId}">
+            <div id="chunkStreamBody-${msgId}">
+              <div style="font-weight: 600; margin-bottom: 4px;">📥 正在接收加密附件: ${this.escapeHtml(meta.mediaMeta?.name || '媒体文件')}</div>
+              <div style="font-size: 0.72rem; color: var(--text-muted);">${this.formatFileSize(meta.mediaMeta?.size || 0)} · 256KB 微分块流</div>
+            </div>
+            <div class="msg-inline-status" id="chunkProgress-${msgId}">
+              <div style="display: flex; justify-content: space-between; font-size: 0.7rem;">
+                <span id="chunkProgTxt-${msgId}">正在解密数据块...</span>
+                <span id="chunkProgPct-${msgId}">0%</span>
+              </div>
+              <div class="msg-progress-track">
+                <div class="msg-progress-fill" id="chunkProgFill-${msgId}" style="width: 0%;"></div>
+              </div>
+            </div>
+          </div>
+        `;
+        stream.appendChild(bubble);
+        stream.scrollTop = stream.scrollHeight;
+        this.initIcons();
+      }
+
+      // Decrypt this chunk immediately
+      const decryptedChunk = await PCrypto.decryptBinary(iv, cipherBuffer, this.currentKey);
+      session.plainChunks[meta.chunkIndex] = decryptedChunk;
+      session.receivedCount += 1;
+
+      // Update receiver bubble progress
+      const pct = Math.round((session.receivedCount / session.totalChunks) * 100);
+      const fill = document.getElementById(`chunkProgFill-${msgId}`);
+      const pctText = document.getElementById(`chunkProgPct-${msgId}`);
+      const txt = document.getElementById(`chunkProgTxt-${msgId}`);
+      if (fill) fill.style.width = `${pct}%`;
+      if (pctText) pctText.innerText = `${pct}%`;
+      if (txt) txt.innerText = `正在分块解密 (${session.receivedCount}/${session.totalChunks} 块)...`;
+
+      // When all chunks arrive -> assemble into full Blob and render viewer
+      if (session.receivedCount === session.totalChunks) {
+        const fullBlob = new Blob(session.plainChunks, { type: meta.mediaMeta.mimeType });
+        const blobUrl = URL.createObjectURL(fullBlob);
+        const card = document.getElementById(`card-${msgId}`);
+        if (card) {
+          let html = '';
+          if (meta.mediaMeta.type === 'image') {
+            html += `<img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">`;
+          } else if (meta.mediaMeta.type === 'video') {
+            html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
+          } else {
+            html += `
+              <a href="${blobUrl}" download="${this.escapeHtml(meta.mediaMeta.name)}" class="file-attachment-card" title="点击下载">
+                <div class="file-icon-box"><i data-lucide="file-down" style="width: 20px; height: 20px;"></i></div>
+                <div class="file-info-text">
+                  <span class="file-name-text">${this.escapeHtml(meta.mediaMeta.name)}</span>
+                  <span class="file-size-text">${this.formatFileSize(meta.mediaMeta.size)} · 点击安全下载</span>
+                </div>
+              </a>
+            `;
+          }
+
+          if (meta.text) {
+            html += `<div style="white-space: pre-wrap; margin-top: 8px;">${this.escapeHtml(meta.text)}</div>`;
+          }
+
+          card.innerHTML = html;
+          this.initIcons();
+        }
+        this.incomingChunkStore.delete(msgId);
+      }
+    } catch (err) {
+      console.error('[PChat] Decrypt chunk frame failed:', err);
+    }
+  }
+
+  // Render decrypted Plain Buffer into visual DOM elements
   renderBinaryContentHtml(meta, plainBuffer) {
     let html = '';
 
@@ -902,19 +1191,13 @@ class PChatApp {
       const blobUrl = URL.createObjectURL(blob);
 
       if (meta.mediaMeta.type === 'image') {
-        html += `
-          <img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">
-        `;
+        html += `<img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">`;
       } else if (meta.mediaMeta.type === 'video') {
-        html += `
-          <video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>
-        `;
+        html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
       } else {
         html += `
           <a href="${blobUrl}" download="${this.escapeHtml(meta.mediaMeta.name)}" class="file-attachment-card" title="点击解密下载">
-            <div class="file-icon-box">
-              <i data-lucide="file-down" style="width: 20px; height: 20px;"></i>
-            </div>
+            <div class="file-icon-box"><i data-lucide="file-down" style="width: 20px; height: 20px;"></i></div>
             <div class="file-info-text">
               <span class="file-name-text">${this.escapeHtml(meta.mediaMeta.name)}</span>
               <span class="file-size-text">${this.formatFileSize(meta.mediaMeta.size)} · 点击安全下载</span>
@@ -934,6 +1217,7 @@ class PChatApp {
     return html || '<span style="color: var(--text-muted);">[空白消息]</span>';
   }
 
+  // Reveal Burn Message on Click (Handles both single frame and chunked streams)
   async revealBurnMessage(msgId, isOwn) {
     const card = document.getElementById(`card-${msgId}`);
     const mask = document.getElementById(`burnMask-${msgId}`);
@@ -944,12 +1228,45 @@ class PChatApp {
     if (this.revealedBurnMessages.has(msgId)) return;
     this.revealedBurnMessages.add(msgId);
 
-    const frame = this.burnBinaryStore.get(msgId);
-    if (!frame) return;
+    const record = this.burnBinaryStore.get(msgId);
+    if (!record) return;
 
     try {
-      const plainBuffer = await PCrypto.decryptBinary(frame.iv, frame.cipherBuffer, this.currentKey);
-      const renderedHtml = this.renderBinaryContentHtml(frame.meta, plainBuffer);
+      let renderedHtml = '';
+      if (record.isChunked) {
+        // Decrypt all stored chunks
+        const plainChunks = [];
+        for (const c of record.chunks) {
+          if (c) {
+            const dec = await PCrypto.decryptBinary(c.iv, c.cipherBuffer, this.currentKey);
+            plainChunks.push(dec);
+          }
+        }
+        const fullBlob = new Blob(plainChunks, { type: record.meta.mediaMeta.mimeType });
+        const blobUrl = URL.createObjectURL(fullBlob);
+
+        if (record.meta.mediaMeta.type === 'image') {
+          renderedHtml += `<img src="${blobUrl}" class="media-img-preview" alt="阅后即焚图片" onclick="app.openLightbox('${blobUrl}')">`;
+        } else if (record.meta.mediaMeta.type === 'video') {
+          renderedHtml += `<video src="${blobUrl}" class="media-video-player" controls autoplay playsinline></video>`;
+        } else {
+          renderedHtml += `
+            <a href="${blobUrl}" download="${this.escapeHtml(record.meta.mediaMeta.name)}" class="file-attachment-card">
+              <div class="file-icon-box"><i data-lucide="file-down" style="width: 20px; height: 20px;"></i></div>
+              <div class="file-info-text">
+                <span class="file-name-text">${this.escapeHtml(record.meta.mediaMeta.name)}</span>
+                <span class="file-size-text">${this.formatFileSize(record.meta.mediaMeta.size)}</span>
+              </div>
+            </a>
+          `;
+        }
+        if (record.meta.text) {
+          renderedHtml += `<div style="white-space: pre-wrap; margin-top: 8px;">${this.escapeHtml(record.meta.text)}</div>`;
+        }
+      } else {
+        const plainBuffer = await PCrypto.decryptBinary(record.iv, record.cipherBuffer, this.currentKey);
+        renderedHtml = this.renderBinaryContentHtml(record.meta, plainBuffer);
+      }
 
       mask.style.display = 'none';
       textElem.innerHTML = `
@@ -1048,6 +1365,7 @@ class PChatApp {
       this.activeBurnIntervals.delete(msgId);
     }
     this.burnBinaryStore.delete(msgId);
+    this.incomingChunkStore.delete(msgId);
   }
 
   openAdminModal() {

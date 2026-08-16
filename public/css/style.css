@@ -699,6 +699,77 @@ input:checked + .slider:before {
   border-bottom-left-radius: 2px;
 }
 
+/* Inline Message Progress & Sending State (WeChat Style) */
+.msg-inline-status {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  font-size: 0.72rem;
+  color: var(--accent-cyan);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg-progress-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.msg-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
+  width: 0%;
+  transition: width 0.15s ease;
+}
+
+.msg-sending-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.65rem;
+  color: var(--accent-yellow);
+}
+
+.msg-failed-wrapper {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-red);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.msg-retry-btn {
+  background: rgba(255, 59, 92, 0.2);
+  border: 1px solid var(--accent-red);
+  color: #fff;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.2s ease;
+}
+
+.msg-retry-btn:hover {
+  background: var(--accent-red);
+}
+
+.spin-anim {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  100% { transform: rotate(360deg); }
+}
+
 /* BURN AFTER READING MESSAGE CARD */
 .msg-burn-card {
   background: rgba(255, 59, 92, 0.08) !important;
