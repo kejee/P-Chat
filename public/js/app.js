@@ -278,8 +278,8 @@ class PChatApp {
     this.initIcons();
   }
 
-  clearAttachment() {
-    if (this.pendingAttachment && this.pendingAttachment.previewUrl) {
+  clearAttachment(shouldRevoke = false) {
+    if (shouldRevoke && this.pendingAttachment && this.pendingAttachment.previewUrl) {
       URL.revokeObjectURL(this.pendingAttachment.previewUrl);
     }
     this.pendingAttachment = null;
@@ -1189,13 +1189,17 @@ class PChatApp {
     let html = '';
 
     if (meta.hasMedia && meta.mediaMeta) {
-      const blob = new Blob([plainBuffer], { type: meta.mediaMeta.mimeType });
+      let mime = meta.mediaMeta.mimeType || 'application/octet-stream';
+      if (meta.mediaMeta.type === 'video' && (!mime || mime === 'video/quicktime' || mime.includes('quicktime'))) {
+        mime = 'video/mp4';
+      }
+      const blob = new Blob([plainBuffer], { type: mime });
       const blobUrl = URL.createObjectURL(blob);
 
       if (meta.mediaMeta.type === 'image') {
         html += `<img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">`;
       } else if (meta.mediaMeta.type === 'video') {
-        html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
+        html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline webkit-playsinline></video>`;
       } else {
         html += `
           <a href="${blobUrl}" download="${this.escapeHtml(meta.mediaMeta.name)}" class="file-attachment-card" title="点击解密下载">

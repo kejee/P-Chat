@@ -26,13 +26,22 @@ class PSocketClient {
         resolve();
       };
 
-      this.ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          // Native Binary Frame
-          this.emit('binary_message', event.data);
+      this.ws.onmessage = async (event) => {
+        let rawData = event.data;
+        if (rawData instanceof Blob) {
+          try {
+            rawData = await rawData.arrayBuffer();
+          } catch (e) {
+            console.error('[PSocket] Failed to convert Blob to ArrayBuffer:', e);
+          }
+        }
+
+        if (rawData instanceof ArrayBuffer) {
+          // Native Binary Frame (Single Packet or 256KB Chunk Stream)
+          this.emit('binary_message', rawData);
         } else {
           try {
-            const data = JSON.parse(event.data);
+            const data = JSON.parse(rawData);
             this.emit(data.type, data.payload || data);
           } catch (e) {
             console.error('[PSocket] Failed to parse message:', e);
