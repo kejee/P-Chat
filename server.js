@@ -29,8 +29,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 const rooms = new Map(); // roomId -> RoomObject
 const ipRateLimits = new Map(); // ip -> { failCount, resetTime }
 
-// Helper to get client IP
+// Helper to get client IP (Supports Cloudflare Tunnel, Nginx, and Direct Connections)
 function getClientIp(req) {
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (cfIp) {
+    return cfIp.trim();
+  }
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) {
     return forwarded.split(',')[0].trim();
