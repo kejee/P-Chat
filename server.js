@@ -143,7 +143,7 @@ wss.on('connection', (ws, req) => {
     switch (type) {
       // 1. Create Room
       case 'create_room': {
-        const { name, passHash, isPublic, allowedIps, destroyDurationMinutes, creatorAlias } = payload;
+        const { name, passHash, isPublic, allowedIps, destroyDurationMinutes, creatorAlias, enableHistory } = payload;
 
         if (!name || typeof name !== 'string') {
           return ws.send(JSON.stringify({ type: 'error', code: 'INVALID_ROOM_NAME' }));
@@ -157,19 +157,22 @@ wss.on('connection', (ws, req) => {
 
         // If no password, room MUST be public
         const effectiveIsPublic = !passHash ? true : Boolean(isPublic);
+        const effectiveEnableHistory = enableHistory !== undefined ? Boolean(enableHistory) : true;
 
         const newRoom = {
           id: roomId,
           name: name.trim().slice(0, 32),
           passHash: passHash || null,
           isPublic: effectiveIsPublic,
+          enableHistory: effectiveEnableHistory,
           allowedIps: Array.isArray(allowedIps) ? allowedIps.filter(Boolean) : [],
           adminToken: adminToken,
           createdAt: now,
           destroyAt: destroyAt,
           destroyDurationMs: durationMs,
           clients: new Set(),
-          burnMessages: new Map()
+          burnMessages: new Map(),
+          messageHistory: [] // RAM-only ring buffer for E2EE ciphertext packets
         };
 
         // Schedule room destruction
@@ -193,6 +196,7 @@ wss.on('connection', (ws, req) => {
             adminToken: adminToken,
             hasPassword: Boolean(newRoom.passHash),
             isPublic: newRoom.isPublic,
+            enableHistory: newRoom.enableHistory,
             allowedIps: newRoom.allowedIps,
             destroyAt: newRoom.destroyAt,
             createdAt: newRoom.createdAt
@@ -274,11 +278,22 @@ wss.on('connection', (ws, req) => {
             name: targetRoom.name,
             hasPassword: Boolean(targetRoom.passHash),
             isPublic: targetRoom.isPublic,
+            enableHistory: targetRoom.enableHistory,
             allowedIps: targetRoom.allowedIps,
             destroyAt: targetRoom.destroyAt,
             createdAt: targetRoom.createdAt
           }
         }));
+
+        // Send existing message history if enabled and non-empty
+        if (targetRoom.enableHistory && targetRoom.messageHistory.length > 0) {
+          ws.send(JSON.stringify({
+            type: 'history_messages',
+            payload: {
+              messages: targetRoom.messageHistory
+            }
+          }));
+        }
 
         broadcastMemberList(targetRoom);
         break;
@@ -306,6 +321,14 @@ wss.on('connection', (ws, req) => {
             timestamp: Date.now()
           }
         };
+
+        // Cache regular messages into RAM history buffer (max 100 entries)
+        if (room.enableHistory && !isBurn) {
+          room.messageHistory.push(messagePacket.payload);
+          if (room.messageHistory.length > 100) {
+            room.messageHistory.shift();
+          }
+        }
 
         // Register burn tracker if requested
         if (isBurn && burnConfig) {
@@ -420,7 +443,7 @@ wss.on('connection', (ws, req) => {
           return ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED' }));
         }
 
-        const { passHash, isPublic, allowedIps } = payload;
+        const { passHash, isPublic, allowedIps, enableHistory } = payload;
 
         if (passHash !== undefined) {
           room.passHash = passHash || null;
@@ -433,6 +456,13 @@ wss.on('connection', (ws, req) => {
           room.isPublic = Boolean(isPublic);
         }
 
+        if (enableHistory !== undefined) {
+          room.enableHistory = Boolean(enableHistory);
+          if (!room.enableHistory) {
+            room.messageHistory = [];
+          }
+        }
+
         if (Array.isArray(allowedIps)) {
           room.allowedIps = allowedIps.filter(Boolean);
         }
@@ -442,6 +472,7 @@ wss.on('connection', (ws, req) => {
           payload: {
             hasPassword: Boolean(room.passHash),
             isPublic: room.isPublic,
+            enableHistory: room.enableHistory,
             allowedIps: room.allowedIps
           }
         });
@@ -452,7 +483,29 @@ wss.on('connection', (ws, req) => {
         break;
       }
 
-      // 6. Admin Panic Button (Emergency Instant Self-Destruction)
+      // 6. Admin Clear History Buffer
+      case 'admin_clear_history': {
+        if (!ws.roomId || !ws.isAdmin) {
+          return ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED' }));
+        }
+        const room = rooms.get(ws.roomId);
+        if (!room || payload.adminToken !== room.adminToken) {
+          return ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED' }));
+        }
+
+        room.messageHistory = [];
+        const clearNotify = JSON.stringify({
+          type: 'history_cleared',
+          payload: { byAlias: ws.alias }
+        });
+
+        for (const client of room.clients) {
+          if (client.readyState === WebSocket.OPEN) client.send(clearNotify);
+        }
+        break;
+      }
+
+      // 7. Admin Panic Button (Emergency Instant Self-Destruction)
       case 'admin_panic_destroy': {
         if (!ws.roomId || !ws.isAdmin) {
           return ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED' }));
@@ -466,7 +519,7 @@ wss.on('connection', (ws, req) => {
         break;
       }
 
-      // 7. Ping / Heartbeat
+      // 8. Ping / Heartbeat
       case 'ping': {
         ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
         break;
@@ -507,6 +560,10 @@ function broadcastMemberList(room) {
 }
 
 function broadcastDestroyMessage(room, msgId, reason) {
+  if (room.messageHistory && room.messageHistory.length > 0) {
+    room.messageHistory = room.messageHistory.filter(m => m.msgId !== msgId);
+  }
+
   const payload = JSON.stringify({
     type: 'destroy_message',
     payload: { msgId: msgId, reason: reason }

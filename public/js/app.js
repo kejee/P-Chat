@@ -344,10 +344,40 @@ class PChatApp {
       this.destroyMessageElement(payload.msgId, payload.reason);
     });
 
+    PSocket.on('history_messages', async (payload) => {
+      if (payload.messages && payload.messages.length > 0) {
+        const stream = document.getElementById('messageStream');
+        const divider = document.createElement('div');
+        divider.className = 'history-divider';
+        divider.innerHTML = `
+          <span><i data-lucide="history" style="width: 13px; height: 13px; vertical-align: middle; margin-right: 4px;"></i> 进群前历史记录 (${payload.messages.length}条 · 本地已解密)</span>
+        `;
+        stream.appendChild(divider);
+
+        for (const msg of payload.messages) {
+          await this.renderIncomingMessage(msg, true);
+        }
+        this.initIcons();
+      }
+    });
+
+    PSocket.on('history_cleared', (payload) => {
+      const stream = document.getElementById('messageStream');
+      const info = document.createElement('div');
+      info.className = 'history-divider';
+      info.style.borderColor = 'rgba(255, 184, 0, 0.3)';
+      info.innerHTML = `
+        <span style="color: var(--accent-yellow);"><i data-lucide="trash-2" style="width: 13px; height: 13px; vertical-align: middle; margin-right: 4px;"></i> 管理员 (${this.escapeHtml(payload.byAlias)}) 已清空房间内存历史缓冲区</span>
+      `;
+      stream.appendChild(info);
+      this.initIcons();
+    });
+
     PSocket.on('room_config_updated', (payload) => {
       if (this.currentRoom) {
         this.currentRoom.hasPassword = payload.hasPassword;
         this.currentRoom.isPublic = payload.isPublic;
+        this.currentRoom.enableHistory = payload.enableHistory;
         this.currentRoom.allowedIps = payload.allowedIps;
         this.updateRoomBadge();
       }
@@ -426,6 +456,7 @@ class PChatApp {
     const nameInput = document.getElementById('createNameInput');
     const passInput = document.getElementById('createPasswordInput');
     const isPublicCheck = document.getElementById('createIsPublic');
+    const enableHistoryCheck = document.getElementById('createEnableHistory');
     const durationSelect = document.getElementById('createDestroyDuration');
     const ipsInput = document.getElementById('createAllowedIps');
 
@@ -433,6 +464,7 @@ class PChatApp {
     const rawPassword = passInput.value;
     const password = this.cleanPassword(rawPassword);
     let isPublic = isPublicCheck.checked;
+    const enableHistory = enableHistoryCheck ? enableHistoryCheck.checked : true;
 
     // Rule: If password is empty, room MUST be public
     if (!password) {
@@ -451,6 +483,7 @@ class PChatApp {
       name: name,
       passHash: passHash,
       isPublic: isPublic,
+      enableHistory: enableHistory,
       allowedIps: allowedIps,
       destroyDurationMinutes: durationMinutes,
       creatorAlias: 'Admin (' + this.myAlias + ')'
@@ -782,13 +815,13 @@ class PChatApp {
   }
 
   // Render Incoming Message
-  async renderIncomingMessage(payload) {
+  async renderIncomingMessage(payload, isHistory = false) {
     const stream = document.getElementById('messageStream');
     const isOwn = payload.senderAlias.includes(this.myAlias);
     const timeStr = new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     const bubble = document.createElement('div');
-    bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
+    bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'} ${isHistory ? 'msg-history-bubble' : ''}`;
     bubble.id = payload.msgId;
 
     if (payload.isBurn) {
@@ -799,7 +832,7 @@ class PChatApp {
 
       bubble.innerHTML = `
         <div class="msg-meta">
-          <span>${this.escapeHtml(payload.senderAlias)}</span>
+          <span>${this.escapeHtml(payload.senderAlias)} ${isHistory ? '<span class="history-tag">历史</span>' : ''}</span>
           <span>${timeStr}</span>
         </div>
         <div class="msg-content-card msg-burn-card" id="card-${payload.msgId}" onclick="app.revealBurnMessage('${payload.msgId}', '${payload.iv}', '${payload.ciphertext}', '${payload.burnConfig?.type}', ${isOwn})">
@@ -818,7 +851,7 @@ class PChatApp {
 
       bubble.innerHTML = `
         <div class="msg-meta">
-          <span>${this.escapeHtml(payload.senderAlias)}</span>
+          <span>${this.escapeHtml(payload.senderAlias)} ${isHistory ? '<span class="history-tag">历史</span>' : ''}</span>
           <span>${timeStr}</span>
         </div>
         <div class="msg-content-card">
@@ -849,13 +882,14 @@ class PChatApp {
         } else if (m.type === 'video') {
           const blobUrl = this.dataUrlToBlobUrl(m.dataUrl);
           html += `
-            <video src="${blobUrl}" class="media-video-player" controls preload="auto" playsinline></video>
+            <video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>
           `;
         } else {
+          // File download card
           html += `
-            <a href="${m.dataUrl}" download="${this.escapeHtml(m.name)}" class="file-attachment-card">
+            <a href="${m.dataUrl}" download="${this.escapeHtml(m.name)}" class="file-attachment-card" title="点击解密下载">
               <div class="file-icon-box">
-                <i data-lucide="download" style="width: 18px; height: 18px;"></i>
+                <i data-lucide="file-down" style="width: 20px; height: 20px;"></i>
               </div>
               <div class="file-info-text">
                 <span class="file-name-text">${this.escapeHtml(m.name)}</span>
@@ -874,47 +908,57 @@ class PChatApp {
 
   // Reveal Burn Message on Click
   async revealBurnMessage(msgId, iv, ciphertext, burnType, isOwn) {
+    const card = document.getElementById(`card-${msgId}`);
     const mask = document.getElementById(`burnMask-${msgId}`);
     const textElem = document.getElementById(`burnText-${msgId}`);
+    const bar = document.getElementById(`burnBar-${msgId}`);
+    if (!card || !mask || !textElem) return;
 
-    if (!mask || !textElem || textElem.style.display !== 'none') return;
-
-    if (!this.revealedBurnMessages) {
-      this.revealedBurnMessages = new Set();
+    if (this.revealedBurnMessages.has(msgId)) {
+      return; // already revealed
     }
     this.revealedBurnMessages.add(msgId);
 
-    // Decrypt on demand
+    // Decrypt content
     const decryptedRaw = await PCrypto.decrypt(iv, ciphertext, this.currentKey);
-    const contentHtml = this.formatDecryptedContent(decryptedRaw);
+    const renderedHtml = this.formatDecryptedContent(decryptedRaw);
 
     mask.style.display = 'none';
+    textElem.innerHTML = `
+      <div style="margin-bottom: 6px;">
+        <span style="font-size: 0.72rem; color: var(--accent-red); font-weight: 600;">
+          🔥 阅后即焚已激活 ${isOwn ? '(发件人预览模式，不计入读者配额)' : ''}
+        </span>
+      </div>
+      ${renderedHtml}
+      <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+        <button class="btn btn-danger btn-sm" style="padding: 3px 8px; font-size: 0.72rem;" onclick="event.stopPropagation(); app.destroyMessageElement('${msgId}', 'user_destroyed_early')">
+          <i data-lucide="trash-2" style="width: 12px; height: 12px;"></i> 我已看完 · 立即销毁
+        </button>
+      </div>
+    `;
     textElem.style.display = 'block';
-
-    if (isOwn) {
-      // Sender Preview mode - does NOT consume reader quota and does NOT self-destruct
-      textElem.innerHTML = `
-        <div style="color: var(--accent-cyan); font-size: 0.72rem; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-          <i data-lucide="shield-check" style="width: 12px; height: 12px;"></i> 发送者预览 (不占用读者配额)
-        </div>
-        <div>${contentHtml}</div>
-      `;
-    } else {
-      // Reader mode - protected reading time
-      textElem.innerHTML = `
-        <div style="color: var(--accent-red); font-size: 0.72rem; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
-          <span style="display: flex; align-items: center; gap: 4px;"><i data-lucide="flame" style="width: 12px; height: 12px;"></i> 机密已读 (阅读倒计时中)</span>
-          <button class="btn btn-danger btn-sm" style="padding: 1px 6px; font-size: 0.65rem;" onclick="app.destroyMessageElement('${msgId}', 'manual_close')">阅毕立即销毁</button>
-        </div>
-        <div>${contentHtml}</div>
-      `;
-
-      // Start reader local countdown (15s reading window)
-      this.startLocalBurnCountdown(msgId, 15000);
-      PSocket.send('read_burn_message', { msgId: msgId });
-    }
-
     this.initIcons();
+
+    // Notify server of read action
+    PSocket.send('read_burn_message', { msgId: msgId });
+
+    // Local reading protection countdown: give this viewer 15s to read before destroying
+    if (!isOwn) {
+      const readDurationMs = 15000;
+      const startTime = Date.now();
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const pct = Math.min(100, (elapsed / readDurationMs) * 100);
+        if (bar) bar.style.width = `${pct}%`;
+
+        if (elapsed >= readDurationMs) {
+          clearInterval(interval);
+          this.destroyMessageElement(msgId, 'local_read_timeout');
+        }
+      }, 50);
+      this.activeBurnIntervals.set(msgId, interval);
+    }
   }
 
   // Reader local countdown timer
@@ -1011,6 +1055,10 @@ class PChatApp {
     if (!this.isAdmin || !this.currentRoom) return;
     document.getElementById('adminPasswordInput').value = this.currentPassword;
     document.getElementById('adminIsPublic').checked = this.currentRoom.isPublic;
+    const enableHistoryToggle = document.getElementById('adminEnableHistory');
+    if (enableHistoryToggle) {
+      enableHistoryToggle.checked = Boolean(this.currentRoom.enableHistory);
+    }
     document.getElementById('adminAllowedIps').value = (this.currentRoom.allowedIps || []).join(', ');
     document.getElementById('adminModal').classList.add('active');
   }
@@ -1023,6 +1071,7 @@ class PChatApp {
     const rawPass = document.getElementById('adminPasswordInput').value;
     const newPass = this.cleanPassword(rawPass);
     let isPublic = document.getElementById('adminIsPublic').checked;
+    const enableHistory = document.getElementById('adminEnableHistory').checked;
     const ips = document.getElementById('adminAllowedIps').value.split(',').map(s => s.trim()).filter(Boolean);
 
     // If password cleared, MUST be public
@@ -1043,6 +1092,17 @@ class PChatApp {
 
     this.closeAdminModal();
     alert('✅ 管理员安全配置已更新！');
+  }
+
+  clearRoomHistory() {
+    if (!confirm('确定要立即清空房间内的所有内存历史缓冲区吗？新进群成员将不再能看到之前的历史消息。')) {
+      return;
+    }
+    PSocket.send('admin_clear_history', {
+      adminToken: this.adminToken
+    });
+    this.closeAdminModal();
+    alert('🧹 已发送清空历史缓冲区指令！');
   }
 
   panicDestroyRoom() {

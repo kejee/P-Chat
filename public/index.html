@@ -120,6 +120,17 @@
             </label>
           </div>
 
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span class="toggle-title">允许新成员同步历史消息</span>
+              <span class="toggle-desc">开启后新进群成员可解密查看本群历史消息；关闭后进群前消息无痕不留存</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="createEnableHistory" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
           <div class="form-group">
             <label class="form-label">群组生命周期 (自动销毁时长)</label>
             <select id="createDestroyDuration" class="input-box">
@@ -342,12 +353,29 @@
         </label>
       </div>
 
+      <div class="toggle-row">
+        <div class="toggle-label">
+          <span class="toggle-title">允许新成员同步历史消息</span>
+          <span class="toggle-desc">关闭后立即清空并停用后加入者的历史同步</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="adminEnableHistory">
+          <span class="slider"></span>
+        </label>
+      </div>
+
       <div class="form-group">
         <label class="form-label">更新 IP 白名单 (以逗号分隔)</label>
         <input type="text" id="adminAllowedIps" class="input-box mono" placeholder="例如: 127.0.0.1, 10.0.0.*">
       </div>
 
-      <div style="display: flex; gap: 10px; margin-top: 20px;">
+      <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
+        <button class="btn btn-outline btn-sm" style="width: 100%; border-color: var(--accent-yellow); color: var(--accent-yellow);" onclick="app.clearRoomHistory()">
+          <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> 立即清空房间内存历史缓冲区
+        </button>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 16px;">
         <button class="btn btn-primary" style="flex: 1;" onclick="app.submitAdminUpdate()">
           保存安全配置
         </button>

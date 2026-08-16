@@ -566,6 +566,49 @@ input:checked + .slider:before {
   gap: 16px;
 }
 
+/* History message divider and tags */
+.history-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 16px 0;
+  position: relative;
+  text-align: center;
+}
+.history-divider::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 50%;
+  height: 1px;
+  background: var(--border-color);
+  z-index: 1;
+}
+.history-divider span {
+  position: relative;
+  z-index: 2;
+  background: var(--bg-card);
+  padding: 4px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  font-size: 0.72rem;
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+}
+
+.history-tag {
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 229, 255, 0.15);
+  color: var(--accent-cyan);
+  margin-left: 4px;
+  font-family: var(--font-mono);
+}
+
+.msg-history-bubble .msg-content-card {
+  opacity: 0.92;
+}
+
 /* Chat Message Cards */
 .msg-bubble {
   max-width: 80%;
