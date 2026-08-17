@@ -8,19 +8,49 @@ class PSocketClient {
     this.ws = null;
     this.listeners = new Map();
     this.pingTimer = null;
+    this.reconnectTimer = null;
     this.isConnected = false;
+    this.isReconnecting = false;
+
+    // Listen for tab focus / screen wake on mobile devices (Android Chrome / iOS Safari)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !this.isConnected) {
+        this.reconnect();
+      }
+    });
+
+    window.addEventListener('online', () => {
+      if (!this.isConnected) {
+        this.reconnect();
+      }
+    });
   }
 
   connect() {
     return new Promise((resolve, reject) => {
+      if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+        return resolve();
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}`;
 
-      this.ws = new WebSocket(wsUrl);
+      try {
+        this.ws = new WebSocket(wsUrl);
+      } catch (e) {
+        this.scheduleAutoReconnect();
+        return reject(e);
+      }
+
       this.ws.binaryType = 'arraybuffer'; // Native Binary Mode
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.isReconnecting = false;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.startHeartbeat();
         this.emit('connected');
         resolve();
@@ -53,13 +83,44 @@ class PSocketClient {
         this.isConnected = false;
         this.stopHeartbeat();
         this.emit('disconnected');
+        this.scheduleAutoReconnect();
       };
 
       this.ws.onerror = (err) => {
         console.error('[PSocket] Connection error:', err);
+        this.isConnected = false;
+        this.stopHeartbeat();
+        this.emit('disconnected');
+        this.scheduleAutoReconnect();
         reject(err);
       };
     });
+  }
+
+  scheduleAutoReconnect() {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnect();
+    }, 3000);
+  }
+
+  async reconnect() {
+    if (this.isReconnecting) return;
+    this.isReconnecting = true;
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.onerror = null;
+        try { this.ws.close(); } catch (e) {}
+        this.ws = null;
+      }
+      await this.connect();
+    } catch (e) {
+      console.warn('[PSocket] Reconnect attempt failed, will retry in 3s');
+    } finally {
+      this.isReconnecting = false;
+    }
   }
 
   startHeartbeat() {

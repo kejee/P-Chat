@@ -1,9 +1,11 @@
 /**
- * P-Chat Main Application Controller
+ * P-Chat Main Application Controller (v1.3.1)
  * Features:
  * - 256KB Chunked E2EE Stream Engine for Zero Server RAM Footprint
  * - WeChat-Style Optimistic Instant UI with Inline Progress & Failure Retry
- * - AES-256-GCM + PBKDF2 Zero-Knowledge Security
+ * - Flawless Mobile & iOS Safari VisualViewport Integration
+ * - Reconnection Recovery, Live Status Capsule & On-Demand History Decryption
+ * - Strict Admin Role Verification & Seamless Token Session Recovery
  */
 
 class PChatApp {
@@ -22,6 +24,7 @@ class PChatApp {
     this.burnBinaryStore = new Map(); // msgId -> { iv, cipherBuffer, meta }
     this.incomingChunkStore = new Map(); // msgId -> { meta, chunks: [], totalChunks, receivedCount }
     this.pendingRetries = new Map(); // msgId -> messageDataObject
+    this.renderedMessageIds = new Set(); // msgId set for deduplication
     this.isPrivacyShieldLocked = false;
     this.pendingAttachment = null; // { name, size, type, mimeType, fileBlob, previewUrl }
 
@@ -57,6 +60,7 @@ class PChatApp {
     this.initPasteHandler();
     this.generateNewPass();
     this.bindKeyboardShortcuts();
+    this.bindMobileKeyboardFocus();
     
     // Fetch Client IP
     try {
@@ -84,13 +88,37 @@ class PChatApp {
       this.setWsStatus(false);
     }
 
-    // Fetch Public Rooms
+    // Fetch Public Rooms periodically
     this.fetchPublicRooms();
     setInterval(() => {
       if (!this.currentRoom) {
         this.fetchPublicRooms();
       }
     }, 10000);
+  }
+
+  bindMobileKeyboardFocus() {
+    const chatInput = document.getElementById('chatMsgInput');
+    if (!chatInput) return;
+
+    // Smooth viewport adjustment when virtual keyboard pops on iOS Chrome / Safari
+    chatInput.addEventListener('focus', () => {
+      setTimeout(() => {
+        if (window.visualViewport) {
+          const vh = window.visualViewport.height;
+          document.documentElement.style.setProperty('--vh-real', `${vh}px`);
+        }
+        const stream = document.getElementById('messageStream');
+        if (stream) stream.scrollTop = stream.scrollHeight;
+      }, 100);
+    });
+
+    chatInput.addEventListener('blur', () => {
+      setTimeout(() => {
+        const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        document.documentElement.style.setProperty('--vh-real', `${vh}px`);
+      }, 150);
+    });
   }
 
   bindKeyboardShortcuts() {
@@ -169,16 +197,34 @@ class PChatApp {
     }
   }
 
+  // Update Online/Offline Status Indicator (Global Header & Chat Topbar)
   setWsStatus(isOnline) {
     const dot = document.getElementById('wsStatusDot');
     const text = document.getElementById('wsStatusText');
+    const chatCapsule = document.getElementById('chatRoomWsCapsule');
+    const chatDot = document.getElementById('chatWsDot');
+    const chatText = document.getElementById('chatWsText');
+
     if (isOnline) {
-      dot.className = 'status-dot online';
-      text.innerText = '安全在线';
+      if (dot) dot.className = 'status-dot online';
+      if (text) text.innerText = '安全在线';
+      if (chatCapsule) chatCapsule.className = 'chat-status-capsule';
+      if (chatDot) chatDot.className = 'status-dot online';
+      if (chatText) chatText.innerText = '安全在线';
     } else {
-      dot.className = 'status-dot';
-      text.innerText = '离线 / 正在重连';
+      if (dot) dot.className = 'status-dot';
+      if (text) text.innerText = '已断开 (重连中)';
+      if (chatCapsule) chatCapsule.className = 'chat-status-capsule offline';
+      if (chatDot) chatDot.className = 'status-dot';
+      if (chatText) chatText.innerText = '已断开 (点此重连)';
     }
+  }
+
+  // Manual Reconnection Handler
+  async manualReconnect() {
+    const chatText = document.getElementById('chatWsText');
+    if (chatText) chatText.innerText = '正在重连...';
+    await PSocket.reconnect();
   }
 
   initAntiPeek() {
@@ -326,8 +372,17 @@ class PChatApp {
   }
 
   bindSocketEvents() {
-    PSocket.on('connected', () => this.setWsStatus(true));
-    PSocket.on('disconnected', () => this.setWsStatus(false));
+    PSocket.on('connected', () => {
+      this.setWsStatus(true);
+      // Auto re-join room if disconnected on mobile
+      if (this.currentRoom && this.currentRoom.id && this.currentKey) {
+        this.performAutoRejoin();
+      }
+    });
+
+    PSocket.on('disconnected', () => {
+      this.setWsStatus(false);
+    });
 
     // Handle Incoming Binary Frames (Single Packet or 256KB Chunk Stream)
     PSocket.on('binary_message', async (arrayBuffer) => {
@@ -338,12 +393,21 @@ class PChatApp {
       this.currentRoom = payload;
       this.isAdmin = true;
       this.adminToken = payload.adminToken;
+      try {
+        sessionStorage.setItem('admin_token_' + payload.roomId, payload.adminToken);
+      } catch (e) {}
       this.enterChatRoomUI();
     });
 
     PSocket.on('room_joined', (payload) => {
       this.currentRoom = payload;
-      this.isAdmin = false;
+      this.isAdmin = Boolean(payload.isAdmin);
+      this.adminToken = payload.adminToken || null;
+      if (this.isAdmin && this.adminToken) {
+        try {
+          sessionStorage.setItem('admin_token_' + payload.roomId, payload.adminToken);
+        } catch (e) {}
+      }
       this.enterChatRoomUI();
     });
 
@@ -399,6 +463,18 @@ class PChatApp {
 
     PSocket.on('error', (err) => {
       alert(`❌ 进群或操作失败: ${err.message || err.code}`);
+    });
+  }
+
+  async performAutoRejoin() {
+    const savedAdminToken = this.adminToken || sessionStorage.getItem('admin_token_' + this.currentRoom.id);
+    const passHash = this.currentPassword ? await PCrypto.sha256(this.currentPassword) : null;
+
+    PSocket.send('join_room', {
+      roomId: this.currentRoom.id,
+      passHash: passHash,
+      alias: this.myAlias,
+      adminToken: savedAdminToken || null
     });
   }
 
@@ -528,10 +604,12 @@ class PChatApp {
       this.currentPassword = '';
       PCrypto.deriveKey('').then(key => {
         this.currentKey = key;
+        const savedToken = sessionStorage.getItem('admin_token_' + roomId);
         PSocket.send('join_room', {
           roomId: roomId,
           passHash: null,
-          alias: this.myAlias
+          alias: this.myAlias,
+          adminToken: savedToken || null
         });
       });
     }
@@ -553,11 +631,13 @@ class PChatApp {
     this.currentPassword = password;
     this.currentKey = await PCrypto.deriveKey(password);
     const passHash = await PCrypto.sha256(password);
+    const savedToken = sessionStorage.getItem('admin_token_' + this.activePromptRoomId);
 
     PSocket.send('join_room', {
       roomId: this.activePromptRoomId,
       passHash: passHash,
-      alias: this.myAlias
+      alias: this.myAlias,
+      adminToken: savedToken || null
     });
 
     this.closePasswordPrompt();
@@ -569,7 +649,11 @@ class PChatApp {
     document.getElementById('chatView').classList.add('active');
 
     document.getElementById('btnLeaveRoom').style.display = 'inline-flex';
-    document.getElementById('btnAdminModal').style.display = this.isAdmin ? 'inline-flex' : 'none';
+    
+    // Strict Admin Button Visibility: ONLY show buttons if user is verified Admin
+    const desktopAdminBtn = document.getElementById('btnDesktopAdmin');
+    if (desktopAdminBtn) desktopAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
+
     const mobileAdminBtn = document.getElementById('btnMobileAdmin');
     if (mobileAdminBtn) mobileAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
 
@@ -577,6 +661,9 @@ class PChatApp {
     this.updateRoomBadge();
 
     this.clearAttachment();
+    this.renderedMessageIds.clear();
+    
+    // Reset Message Stream
     document.getElementById('messageStream').innerHTML = `
       <div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 12px 0;">
         🔒 256KB 微分块流式端到端加密隧道已就绪 · 服务端零内存积压 · 零写盘
@@ -585,6 +672,13 @@ class PChatApp {
 
     this.startRoomCountdown();
     this.initIcons();
+
+    // Trigger History Fetch explicitly after UI & CryptoKey are fully ready
+    if (this.currentRoom.enableHistory) {
+      setTimeout(() => {
+        PSocket.send('fetch_history');
+      }, 50);
+    }
   }
 
   updateRoomBadge() {
@@ -631,13 +725,15 @@ class PChatApp {
     this.burnBinaryStore.clear();
     this.incomingChunkStore.clear();
     this.pendingRetries.clear();
-    this.clearAttachment();
+    this.renderedMessageIds.clear();
+    this.clearAttachment(true);
 
     document.getElementById('chatView').classList.remove('active');
     document.getElementById('lobbyView').classList.add('active');
 
     document.getElementById('btnLeaveRoom').style.display = 'none';
-    document.getElementById('btnAdminModal').style.display = 'none';
+    const desktopAdminBtn = document.getElementById('btnDesktopAdmin');
+    if (desktopAdminBtn) desktopAdminBtn.style.display = 'none';
     const mobileAdminBtn = document.getElementById('btnMobileAdmin');
     if (mobileAdminBtn) mobileAdminBtn.style.display = 'none';
 
@@ -733,16 +829,15 @@ class PChatApp {
     // 1. Instant Optimistic UI: Render bubble immediately into stream
     this.renderOptimisticSendingBubble(messageData);
 
-    // 2. Clear inputs immediately & refocus
+    // 2. Clear inputs immediately & keep preview URL alive
     input.value = '';
-    this.clearAttachment();
+    this.clearAttachment(false);
     input.focus();
 
     // 3. Pump transmission pipeline
     this.executeSendPipeline(messageData);
   }
 
-  // Render optimistic message bubble on screen with progress bar
   renderOptimisticSendingBubble(messageData) {
     const stream = document.getElementById('messageStream');
     const timeStr = new Date(messageData.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -755,9 +850,9 @@ class PChatApp {
     if (messageData.attachment) {
       const att = messageData.attachment;
       if (att.type === 'image') {
-        contentHtml += `<img src="${att.previewUrl}" class="media-img-preview" style="filter: brightness(0.85);" alt="发送预览">`;
+        contentHtml += `<img src="${att.previewUrl}" class="media-img-preview" alt="发送预览" onclick="app.openLightbox('${att.previewUrl}')">`;
       } else if (att.type === 'video') {
-        contentHtml += `<video src="${att.previewUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
+        contentHtml += `<video src="${att.previewUrl}" class="media-video-player" controls preload="metadata" playsinline webkit-playsinline></video>`;
       } else {
         contentHtml += `
           <div class="file-attachment-card">
@@ -799,10 +894,10 @@ class PChatApp {
 
     stream.appendChild(bubble);
     stream.scrollTop = stream.scrollHeight;
+    this.renderedMessageIds.add(messageData.msgId);
     this.initIcons();
   }
 
-  // Update sending progress inside the bubble
   updateBubbleProgress(msgId, percent, statusText) {
     const fill = document.getElementById(`progressFill-${msgId}`);
     const pct = document.getElementById(`progressPercent-${msgId}`);
@@ -812,7 +907,6 @@ class PChatApp {
     if (txt) txt.innerText = statusText;
   }
 
-  // Mark bubble as sent successfully
   markBubbleSuccess(msgId) {
     const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
     const statusTag = document.getElementById(`statusTag-${msgId}`);
@@ -825,7 +919,6 @@ class PChatApp {
     }
   }
 
-  // Mark bubble as failed with one-click retry button
   markBubbleFailed(msgId, errMessage) {
     const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
     const statusTag = document.getElementById(`statusTag-${msgId}`);
@@ -845,12 +938,10 @@ class PChatApp {
     }
   }
 
-  // Retry sending failed message
   retrySendMessage(msgId) {
     const messageData = this.pendingRetries.get(msgId);
     if (!messageData) return;
 
-    // Reset bubble UI to sending
     const inlineStatus = document.getElementById(`inlineStatus-${msgId}`);
     const statusTag = document.getElementById(`statusTag-${msgId}`);
     if (statusTag) {
@@ -872,7 +963,6 @@ class PChatApp {
     this.executeSendPipeline(messageData);
   }
 
-  // Core Sending Pipeline (Handles both single frames and 256KB Chunked stream)
   async executeSendPipeline(messageData) {
     const { msgId, text, attachment, isBurn, burnConfig, timestamp } = messageData;
     this.pendingRetries.set(msgId, messageData);
@@ -883,9 +973,8 @@ class PChatApp {
       }
 
       const hasMedia = Boolean(attachment);
-      const CHUNK_SIZE = PCrypto.CHUNK_SIZE; // 256KB
+      const CHUNK_SIZE = PCrypto.CHUNK_SIZE;
 
-      // Case 1: Pure text or tiny attachment (<= 256KB) -> Single Unified Binary Frame
       if (!hasMedia || attachment.size <= CHUNK_SIZE) {
         this.updateBubbleProgress(msgId, 30, '正在生成 AES-256-GCM 密文...');
 
@@ -922,7 +1011,6 @@ class PChatApp {
         return;
       }
 
-      // Case 2: Large Media (> 256KB) -> 256KB Micro-Chunk E2EE Stream Engine
       const totalChunks = Math.ceil(attachment.size / CHUNK_SIZE);
       const fileBlob = attachment.fileBlob;
 
@@ -942,7 +1030,7 @@ class PChatApp {
           timestamp: timestamp,
           isBurn: isBurn,
           burnConfig: burnConfig,
-          text: (i === 0) ? (text || '') : '', // Text sent with first chunk
+          text: (i === 0) ? (text || '') : '',
           chunkIndex: i,
           totalChunks: totalChunks,
           isLast: (i === totalChunks - 1),
@@ -960,7 +1048,6 @@ class PChatApp {
         const currentPct = Math.round(((i + 1) / totalChunks) * 100);
         this.updateBubbleProgress(msgId, currentPct, `正在分块加密传输 (${i + 1}/${totalChunks} 块)...`);
 
-        // Micro-yield to prevent browser main-thread lag
         if (totalChunks > 4 && i % 2 === 0) {
           await new Promise(r => setTimeout(r, 8));
         }
@@ -975,19 +1062,16 @@ class PChatApp {
     }
   }
 
-  // Dispatch incoming live binary frames (Single or Chunks)
   async dispatchIncomingBinaryFrame(arrayBuffer) {
     const view = new DataView(arrayBuffer);
     if (view.byteLength < 20) return;
 
-    // Check if Single Packet ("PCHT")
     if (view.getUint8(0) === 0x50 && view.getUint8(1) === 0x43 &&
         view.getUint8(2) === 0x48 && view.getUint8(3) === 0x54) {
       await this.handleIncomingSingleFrame(arrayBuffer);
       return;
     }
 
-    // Check if 256KB Chunk Packet ("PCCK")
     if (view.getUint8(0) === 0x50 && view.getUint8(1) === 0x43 &&
         view.getUint8(2) === 0x43 && view.getUint8(3) === 0x4B) {
       await this.handleIncomingChunkFrame(arrayBuffer);
@@ -995,23 +1079,28 @@ class PChatApp {
     }
   }
 
-  // Handle Single Unified Binary Frame
   async handleIncomingSingleFrame(arrayBuffer) {
     try {
       const frame = PCrypto.unpackBinaryFrame(arrayBuffer);
       if (!frame) return;
 
       const { iv, meta, cipherBuffer } = frame;
+      const msgId = meta.msgId;
+
+      // Prevent duplicate rendering
+      if (this.renderedMessageIds.has(msgId)) return;
+      this.renderedMessageIds.add(msgId);
+
       const stream = document.getElementById('messageStream');
       const isOwn = meta.senderAlias.includes(this.myAlias);
       const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
       const bubble = document.createElement('div');
       bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
-      bubble.id = meta.msgId;
+      bubble.id = msgId;
 
       if (meta.isBurn) {
-        this.burnBinaryStore.set(meta.msgId, { iv, cipherBuffer, meta, isChunked: false });
+        this.burnBinaryStore.set(msgId, { iv, cipherBuffer, meta, isChunked: false });
         const burnHint = meta.burnConfig?.type === 'views'
           ? `🔥 阅后即焚 (限 ${meta.burnConfig.maxViews} 人查看)`
           : `🔥 阅后即焚 (查看后 ${meta.burnConfig.viewDurationSec} 秒自毁)`;
@@ -1021,13 +1110,13 @@ class PChatApp {
             <span>${this.escapeHtml(meta.senderAlias)}</span>
             <span>${timeStr}</span>
           </div>
-          <div class="msg-content-card msg-burn-card" id="card-${meta.msgId}" onclick="app.revealBurnMessage('${meta.msgId}', ${isOwn})">
-            <div class="burn-shield-overlay" id="burnMask-${meta.msgId}">
+          <div class="msg-content-card msg-burn-card" id="card-${msgId}" onclick="app.revealBurnMessage('${msgId}', ${isOwn})">
+            <div class="burn-shield-overlay" id="burnMask-${msgId}">
               <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
               <span>${burnHint} · ${isOwn ? '发件人点击预览' : '点击解密查看'}</span>
             </div>
-            <div class="burn-text" id="burnText-${meta.msgId}" style="display: none;"></div>
-            <div class="burn-timer-bar" id="burnBar-${meta.msgId}" style="width: 0%;"></div>
+            <div class="burn-text" id="burnText-${msgId}" style="display: none;"></div>
+            <div class="burn-timer-bar" id="burnBar-${msgId}" style="width: 0%;"></div>
           </div>
         `;
       } else {
@@ -1053,7 +1142,6 @@ class PChatApp {
     }
   }
 
-  // Handle Incoming 256KB Chunked Stream Frames
   async handleIncomingChunkFrame(arrayBuffer) {
     try {
       const frame = PCrypto.unpackChunkFrame(arrayBuffer);
@@ -1065,7 +1153,6 @@ class PChatApp {
       const stream = document.getElementById('messageStream');
       const timeStr = new Date(meta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-      // If Burn After Reading, collect encrypted chunks for on-demand decryption
       if (meta.isBurn) {
         let burnRecord = this.burnBinaryStore.get(msgId);
         if (!burnRecord) {
@@ -1077,7 +1164,6 @@ class PChatApp {
           };
           this.burnBinaryStore.set(msgId, burnRecord);
 
-          // Render Burn Card on first chunk
           const burnBubble = document.createElement('div');
           burnBubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
           burnBubble.id = msgId;
@@ -1109,7 +1195,6 @@ class PChatApp {
         return;
       }
 
-      // Normal Message Chunk Flow: Decrypt chunk on the fly
       let session = this.incomingChunkStore.get(msgId);
       if (!session) {
         session = {
@@ -1120,7 +1205,6 @@ class PChatApp {
         };
         this.incomingChunkStore.set(msgId, session);
 
-        // Render receiver's streaming bubble on first chunk
         const bubble = document.createElement('div');
         bubble.className = `msg-bubble ${isOwn ? 'own' : 'peer'}`;
         bubble.id = msgId;
@@ -1151,12 +1235,10 @@ class PChatApp {
         this.initIcons();
       }
 
-      // Decrypt this chunk immediately
       const decryptedChunk = await PCrypto.decryptBinary(iv, cipherBuffer, this.currentKey);
       session.plainChunks[meta.chunkIndex] = decryptedChunk;
       session.receivedCount += 1;
 
-      // Update receiver bubble progress
       const pct = Math.round((session.receivedCount / session.totalChunks) * 100);
       const fill = document.getElementById(`chunkProgFill-${msgId}`);
       const pctText = document.getElementById(`chunkProgPct-${msgId}`);
@@ -1165,9 +1247,12 @@ class PChatApp {
       if (pctText) pctText.innerText = `${pct}%`;
       if (txt) txt.innerText = `正在分块解密 (${session.receivedCount}/${session.totalChunks} 块)...`;
 
-      // When all chunks arrive -> assemble into full Blob and render viewer
       if (session.receivedCount === session.totalChunks) {
-        const fullBlob = new Blob(session.plainChunks, { type: meta.mediaMeta.mimeType });
+        let mime = meta.mediaMeta?.mimeType || 'application/octet-stream';
+        if (meta.mediaMeta?.type === 'video' && (!mime || mime === 'video/quicktime' || mime.includes('quicktime'))) {
+          mime = 'video/mp4';
+        }
+        const fullBlob = new Blob(session.plainChunks, { type: mime });
         const blobUrl = URL.createObjectURL(fullBlob);
         const card = document.getElementById(`card-${msgId}`);
         if (card) {
@@ -1175,7 +1260,7 @@ class PChatApp {
           if (meta.mediaMeta.type === 'image') {
             html += `<img src="${blobUrl}" class="media-img-preview" alt="加密图片" onclick="app.openLightbox('${blobUrl}')" title="点击放大查看">`;
           } else if (meta.mediaMeta.type === 'video') {
-            html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline></video>`;
+            html += `<video src="${blobUrl}" class="media-video-player" controls preload="metadata" playsinline webkit-playsinline></video>`;
           } else {
             html += `
               <a href="${blobUrl}" download="${this.escapeHtml(meta.mediaMeta.name)}" class="file-attachment-card" title="点击下载">
@@ -1202,7 +1287,6 @@ class PChatApp {
     }
   }
 
-  // Render decrypted Plain Buffer into visual DOM elements
   renderBinaryContentHtml(meta, plainBuffer) {
     let html = '';
 
@@ -1241,7 +1325,6 @@ class PChatApp {
     return html || '<span style="color: var(--text-muted);">[空白消息]</span>';
   }
 
-  // Reveal Burn Message on Click (Handles both single frame and chunked streams)
   async revealBurnMessage(msgId, isOwn) {
     const card = document.getElementById(`card-${msgId}`);
     const mask = document.getElementById(`burnMask-${msgId}`);
@@ -1258,7 +1341,6 @@ class PChatApp {
     try {
       let renderedHtml = '';
       if (record.isChunked) {
-        // Decrypt all stored chunks
         const plainChunks = [];
         for (const c of record.chunks) {
           if (c) {
@@ -1266,13 +1348,17 @@ class PChatApp {
             plainChunks.push(dec);
           }
         }
-        const fullBlob = new Blob(plainChunks, { type: record.meta.mediaMeta.mimeType });
+        let mime = record.meta.mediaMeta?.mimeType || 'application/octet-stream';
+        if (record.meta.mediaMeta?.type === 'video' && (!mime || mime === 'video/quicktime' || mime.includes('quicktime'))) {
+          mime = 'video/mp4';
+        }
+        const fullBlob = new Blob(plainChunks, { type: mime });
         const blobUrl = URL.createObjectURL(fullBlob);
 
         if (record.meta.mediaMeta.type === 'image') {
           renderedHtml += `<img src="${blobUrl}" class="media-img-preview" alt="阅后即焚图片" onclick="app.openLightbox('${blobUrl}')">`;
         } else if (record.meta.mediaMeta.type === 'video') {
-          renderedHtml += `<video src="${blobUrl}" class="media-video-player" controls autoplay playsinline></video>`;
+          renderedHtml += `<video src="${blobUrl}" class="media-video-player" controls autoplay playsinline webkit-playsinline></video>`;
         } else {
           renderedHtml += `
             <a href="${blobUrl}" download="${this.escapeHtml(record.meta.mediaMeta.name)}" class="file-attachment-card">
@@ -1309,7 +1395,6 @@ class PChatApp {
       textElem.style.display = 'block';
       this.initIcons();
 
-      // Notify server of read action
       PSocket.send('read_burn_message', { msgId: msgId });
 
       if (!isOwn) {

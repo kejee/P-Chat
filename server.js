@@ -171,10 +171,10 @@ wss.on('connection', (ws, req) => {
           });
         }
 
-        // Cache into RAM history ring buffer (only single lightweight packets, exclude heavy chunks from history memory)
-        if (!isChunkFrame && room.enableHistory && !meta.isBurn) {
+        // Cache into RAM history ring buffer (exclude burn messages from history)
+        if (room.enableHistory && !meta.isBurn) {
           room.messageHistory.push({ isBinary: true, rawBuffer: raw, msgId: meta.msgId });
-          if (room.messageHistory.length > 30) {
+          if (room.messageHistory.length > 60) {
             room.messageHistory.shift();
           }
         }
@@ -273,7 +273,7 @@ wss.on('connection', (ws, req) => {
 
       // 2. Join Room (via Room ID or Direct Password Matching)
       case 'join_room': {
-        const { roomId, passHash, alias } = payload;
+        const { roomId, passHash, alias, adminToken } = payload;
         if (!checkRateLimit(clientIp)) {
           return ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', message: '尝试次数过多，请 5 分钟后再试。' }));
         }
@@ -309,7 +309,6 @@ wss.on('connection', (ws, req) => {
         if (targetRoom.allowedIps && targetRoom.allowedIps.length > 0) {
           const isAllowed = targetRoom.allowedIps.some(allowed => {
             if (allowed === clientIp) return true;
-            // Basic subnet check (e.g. 192.168.1.0/24 or wildcard 192.168.1.*)
             if (allowed.includes('*')) {
               const prefix = allowed.replace('*', '');
               return clientIp.startsWith(prefix);
@@ -330,9 +329,11 @@ wss.on('connection', (ws, req) => {
           }
         }
 
-        // Join room
+        // Determine Admin Identity
+        const isMatchedAdmin = Boolean(adminToken && targetRoom.adminToken === adminToken);
         ws.roomId = targetRoom.id;
-        ws.alias = (alias || 'Guest').trim().slice(0, 24);
+        ws.isAdmin = isMatchedAdmin;
+        ws.alias = (alias || (isMatchedAdmin ? 'Admin' : 'Guest')).trim().slice(0, 24);
         targetRoom.clients.add(ws);
 
         ws.send(JSON.stringify({
@@ -340,6 +341,8 @@ wss.on('connection', (ws, req) => {
           payload: {
             roomId: targetRoom.id,
             name: targetRoom.name,
+            isAdmin: isMatchedAdmin,
+            adminToken: isMatchedAdmin ? targetRoom.adminToken : null,
             hasPassword: Boolean(targetRoom.passHash),
             isPublic: targetRoom.isPublic,
             enableHistory: targetRoom.enableHistory,
@@ -350,16 +353,22 @@ wss.on('connection', (ws, req) => {
           }
         }));
 
-        // Send existing message history if enabled and non-empty
-        if (targetRoom.enableHistory && targetRoom.messageHistory.length > 0) {
-          for (const item of targetRoom.messageHistory) {
-            if (item.isBinary && item.rawBuffer) {
-              ws.send(item.rawBuffer, { binary: true });
-            }
+        broadcastMemberList(targetRoom);
+        break;
+      }
+
+      // Fetch Room History Explicitly (Triggered by client after key derivation and UI ready)
+      case 'fetch_history': {
+        if (!ws.roomId) return;
+        const targetRoom = rooms.get(ws.roomId);
+        if (!targetRoom || !targetRoom.enableHistory || !targetRoom.messageHistory.length) return;
+
+        // Stream all cached history packets to this client
+        for (const item of targetRoom.messageHistory) {
+          if (item.isBinary && item.rawBuffer && ws.readyState === WebSocket.OPEN) {
+            ws.send(item.rawBuffer, { binary: true });
           }
         }
-
-        broadcastMemberList(targetRoom);
         break;
       }
 

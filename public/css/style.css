@@ -1036,6 +1036,34 @@ input:checked + .slider:before {
   justify-content: center;
 }
 
+.chat-status-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+.chat-status-capsule:hover {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: var(--accent-cyan);
+}
+.chat-status-capsule .status-dot {
+  width: 7px;
+  height: 7px;
+}
+.chat-status-capsule.offline {
+  border-color: rgba(255, 77, 77, 0.4);
+  background: rgba(255, 77, 77, 0.1);
+  color: var(--accent-red);
+}
+
 /* Placeholder Global Styling */
 textarea.input-box::placeholder,
 input.input-box::placeholder {
