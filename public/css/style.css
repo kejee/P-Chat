@@ -1081,9 +1081,17 @@ input.input-box::placeholder {
   display: none !important;
 }
 
+.desktop-only {
+  display: inline-flex !important;
+}
+
 @media (max-width: 900px) {
   .mobile-only {
     display: inline-flex !important;
+  }
+  
+  .desktop-only {
+    display: none !important;
   }
   
   .desktop-text {

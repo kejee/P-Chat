@@ -8,27 +8,38 @@ class PSocketClient {
     this.ws = null;
     this.listeners = new Map();
     this.pingTimer = null;
+    this.pongTimeoutTimer = null;
     this.reconnectTimer = null;
     this.isConnected = false;
     this.isReconnecting = false;
+    this.reconnectAttempts = 0;
 
-    // Listen for tab focus / screen wake on mobile devices (Android Chrome / iOS Safari)
+    // Universal wake & focus detection across PC, iOS Safari, Android Chrome, Mac & Windows
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && !this.isConnected) {
-        this.reconnect();
+      if (document.visibilityState === 'visible') {
+        this.checkConnectionOrReconnect();
       }
+    });
+
+    window.addEventListener('focus', () => {
+      this.checkConnectionOrReconnect();
     });
 
     window.addEventListener('online', () => {
-      if (!this.isConnected) {
-        this.reconnect();
-      }
+      this.reconnect();
     });
+  }
+
+  checkConnectionOrReconnect() {
+    if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.reconnect();
+    }
   }
 
   connect() {
     return new Promise((resolve, reject) => {
-      if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.isConnected = true;
         return resolve();
       }
 
@@ -47,6 +58,7 @@ class PSocketClient {
       this.ws.onopen = () => {
         this.isConnected = true;
         this.isReconnecting = false;
+        this.reconnectAttempts = 0;
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
@@ -57,6 +69,7 @@ class PSocketClient {
       };
 
       this.ws.onmessage = async (event) => {
+        this.resetPongTimeout();
         let rawData = event.data;
         if (rawData instanceof Blob) {
           try {
@@ -72,6 +85,9 @@ class PSocketClient {
         } else {
           try {
             const data = JSON.parse(rawData);
+            if (data.type === 'pong') {
+              return; // Handled
+            }
             this.emit(data.type, data.payload || data);
           } catch (e) {
             console.error('[PSocket] Failed to parse message:', e);
@@ -80,29 +96,32 @@ class PSocketClient {
       };
 
       this.ws.onclose = () => {
-        this.isConnected = false;
-        this.stopHeartbeat();
-        this.emit('disconnected');
-        this.scheduleAutoReconnect();
+        this.handleDisconnect();
       };
 
       this.ws.onerror = (err) => {
         console.error('[PSocket] Connection error:', err);
-        this.isConnected = false;
-        this.stopHeartbeat();
-        this.emit('disconnected');
-        this.scheduleAutoReconnect();
+        this.handleDisconnect();
         reject(err);
       };
     });
   }
 
+  handleDisconnect() {
+    this.isConnected = false;
+    this.stopHeartbeat();
+    this.emit('disconnected');
+    this.scheduleAutoReconnect();
+  }
+
   scheduleAutoReconnect() {
     if (this.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 8000);
+    this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.reconnect();
-    }, 3000);
+    }, delay);
   }
 
   async reconnect() {
@@ -110,6 +129,8 @@ class PSocketClient {
     this.isReconnecting = true;
     try {
       if (this.ws) {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
         this.ws.onclose = null;
         this.ws.onerror = null;
         try { this.ws.close(); } catch (e) {}
@@ -117,7 +138,7 @@ class PSocketClient {
       }
       await this.connect();
     } catch (e) {
-      console.warn('[PSocket] Reconnect attempt failed, will retry in 3s');
+      console.warn('[PSocket] Reconnect attempt failed:', e);
     } finally {
       this.isReconnecting = false;
     }
@@ -128,8 +149,20 @@ class PSocketClient {
     this.pingTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'ping' }));
+        // If no response within 8s -> treat as dead connection and reconnect
+        this.pongTimeoutTimer = setTimeout(() => {
+          console.warn('[PSocket] Heartbeat timeout, restarting socket connection...');
+          this.reconnect();
+        }, 8000);
       }
-    }, 20000);
+    }, 10000);
+  }
+
+  resetPongTimeout() {
+    if (this.pongTimeoutTimer) {
+      clearTimeout(this.pongTimeoutTimer);
+      this.pongTimeoutTimer = null;
+    }
   }
 
   stopHeartbeat() {
@@ -137,6 +170,7 @@ class PSocketClient {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
+    this.resetPongTimeout();
   }
 
   send(type, payload = {}) {

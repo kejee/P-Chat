@@ -1398,19 +1398,41 @@ class PChatApp {
       PSocket.send('read_burn_message', { msgId: msgId });
 
       if (!isOwn) {
-        const readDurationMs = 15000;
-        const startTime = Date.now();
-        const interval = setInterval(() => {
-          const elapsed = Date.now() - startTime;
-          const pct = Math.min(100, (elapsed / readDurationMs) * 100);
-          if (bar) bar.style.width = `${pct}%`;
-
-          if (elapsed >= readDurationMs) {
-            clearInterval(interval);
-            this.destroyMessageElement(msgId, 'local_read_timeout');
+        let readDurationSec = record.meta?.burnConfig?.viewDurationSec || 10;
+        
+        // Industry Standard: If content is a video, dynamically adapt burn countdown to (video duration + 3s buffer)
+        const videoElement = textElem.querySelector('video');
+        const startCountdown = (durationSeconds) => {
+          const readDurationMs = durationSeconds * 1000;
+          const startTime = Date.now();
+          if (this.activeBurnIntervals.has(msgId)) {
+            clearInterval(this.activeBurnIntervals.get(msgId));
           }
-        }, 50);
-        this.activeBurnIntervals.set(msgId, interval);
+          const interval = setInterval(() => {
+            const elapsed = Date.now() - startTime;
+            const pct = Math.min(100, (elapsed / readDurationMs) * 100);
+            if (bar) bar.style.width = `${pct}%`;
+
+            if (elapsed >= readDurationMs) {
+              clearInterval(interval);
+              this.destroyMessageElement(msgId, 'local_read_timeout');
+            }
+          }, 50);
+          this.activeBurnIntervals.set(msgId, interval);
+        };
+
+        if (videoElement) {
+          videoElement.addEventListener('loadedmetadata', () => {
+            const vidSec = Math.ceil(videoElement.duration || 0);
+            if (vidSec > 0) {
+              const adaptedSec = Math.max(readDurationSec, vidSec + 3);
+              startCountdown(adaptedSec);
+            }
+          }, { once: true });
+          startCountdown(Math.max(readDurationSec, 15)); // Default fallback
+        } else {
+          startCountdown(readDurationSec);
+        }
       }
     } catch (err) {
       console.error('[PChat] Failed to reveal burn message:', err);
