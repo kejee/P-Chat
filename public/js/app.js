@@ -33,7 +33,25 @@ class PChatApp {
     return String(str).replace(/[\u200B-\u200D\uFEFF\r\n\t]/g, '').trim();
   }
 
+  initViewportHeightSync() {
+    const updateRealViewport = () => {
+      const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      document.documentElement.style.setProperty('--vh-real', `${vh}px`);
+    };
+
+    updateRealViewport();
+    window.addEventListener('resize', updateRealViewport, { passive: true });
+    window.addEventListener('orientationchange', () => {
+      setTimeout(updateRealViewport, 150);
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', updateRealViewport, { passive: true });
+      window.visualViewport.addEventListener('scroll', updateRealViewport, { passive: true });
+    }
+  }
+
   async init() {
+    this.initViewportHeightSync();
     this.initIcons();
     this.initAntiPeek();
     this.initPasteHandler();
