@@ -329,29 +329,49 @@ wss.on('connection', (ws, req) => {
           }
         }
 
-        // Determine Admin Identity
+        const isRejoin = Boolean(payload.isRejoin);
         const isMatchedAdmin = Boolean(adminToken && targetRoom.adminToken === adminToken);
         ws.roomId = targetRoom.id;
         ws.isAdmin = isMatchedAdmin;
         ws.alias = (alias || (isMatchedAdmin ? 'Admin' : 'Guest')).trim().slice(0, 24);
         targetRoom.clients.add(ws);
 
-        ws.send(JSON.stringify({
-          type: 'room_joined',
-          payload: {
-            roomId: targetRoom.id,
-            name: targetRoom.name,
-            isAdmin: isMatchedAdmin,
-            adminToken: isMatchedAdmin ? targetRoom.adminToken : null,
-            hasPassword: Boolean(targetRoom.passHash),
-            isPublic: targetRoom.isPublic,
-            enableHistory: targetRoom.enableHistory,
-            enableAntiPeek: targetRoom.enableAntiPeek,
-            allowedIps: targetRoom.allowedIps,
-            destroyAt: targetRoom.destroyAt,
-            createdAt: targetRoom.createdAt
-          }
-        }));
+        if (isRejoin) {
+          // Silent reconnection: send room_rejoined (client will NOT clear the DOM)
+          ws.send(JSON.stringify({
+            type: 'room_rejoined',
+            payload: {
+              roomId: targetRoom.id,
+              name: targetRoom.name,
+              isAdmin: isMatchedAdmin,
+              adminToken: isMatchedAdmin ? targetRoom.adminToken : null,
+              hasPassword: Boolean(targetRoom.passHash),
+              isPublic: targetRoom.isPublic,
+              enableHistory: targetRoom.enableHistory,
+              enableAntiPeek: targetRoom.enableAntiPeek,
+              allowedIps: targetRoom.allowedIps,
+              destroyAt: targetRoom.destroyAt,
+              createdAt: targetRoom.createdAt
+            }
+          }));
+        } else {
+          ws.send(JSON.stringify({
+            type: 'room_joined',
+            payload: {
+              roomId: targetRoom.id,
+              name: targetRoom.name,
+              isAdmin: isMatchedAdmin,
+              adminToken: isMatchedAdmin ? targetRoom.adminToken : null,
+              hasPassword: Boolean(targetRoom.passHash),
+              isPublic: targetRoom.isPublic,
+              enableHistory: targetRoom.enableHistory,
+              enableAntiPeek: targetRoom.enableAntiPeek,
+              allowedIps: targetRoom.allowedIps,
+              destroyAt: targetRoom.destroyAt,
+              createdAt: targetRoom.createdAt
+            }
+          }));
+        }
 
         broadcastMemberList(targetRoom);
         break;

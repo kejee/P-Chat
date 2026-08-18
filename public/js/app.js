@@ -1,10 +1,11 @@
 /**
- * P-Chat Main Application Controller (v1.3.1)
+ * P-Chat Main Application Controller (v1.3.3)
  * Features:
  * - 256KB Chunked E2EE Stream Engine for Zero Server RAM Footprint
  * - WeChat-Style Optimistic Instant UI with Inline Progress & Failure Retry
  * - Flawless Mobile & iOS Safari VisualViewport Integration
- * - Reconnection Recovery, Live Status Capsule & On-Demand History Decryption
+ * - Persistent Identity (localStorage alias) - no identity change on refresh
+ * - Silent Reconnection Recovery: room_rejoined does NOT clear chat DOM
  * - Strict Admin Role Verification & Seamless Token Session Recovery
  */
 
@@ -15,7 +16,20 @@ class PChatApp {
     this.currentPassword = '';
     this.isAdmin = false;
     this.adminToken = null;
-    this.myAlias = 'User-' + Math.floor(100 + Math.random() * 900);
+
+    // --- FIX: Persistent Identity across page refresh ---
+    // Load alias from localStorage, generate only if first visit
+    try {
+      let savedAlias = localStorage.getItem('pchat_alias');
+      if (!savedAlias) {
+        savedAlias = 'User-' + Math.floor(100 + Math.random() * 900);
+        localStorage.setItem('pchat_alias', savedAlias);
+      }
+      this.myAlias = savedAlias;
+    } catch (e) {
+      this.myAlias = 'User-' + Math.floor(100 + Math.random() * 900);
+    }
+
     this.clientIp = '未知';
     this.activePromptRoomId = null;
     this.roomTimerInterval = null;
@@ -374,7 +388,7 @@ class PChatApp {
   bindSocketEvents() {
     PSocket.on('connected', () => {
       this.setWsStatus(true);
-      // Auto re-join room if disconnected on mobile
+      // --- FIX: Silent reconnection - auto rejoin without clearing DOM ---
       if (this.currentRoom && this.currentRoom.id && this.currentKey) {
         this.performAutoRejoin();
       }
@@ -396,7 +410,7 @@ class PChatApp {
       try {
         sessionStorage.setItem('admin_token_' + payload.roomId, payload.adminToken);
       } catch (e) {}
-      this.enterChatRoomUI();
+      this.enterChatRoomUI(false);
     });
 
     PSocket.on('room_joined', (payload) => {
@@ -408,7 +422,20 @@ class PChatApp {
           sessionStorage.setItem('admin_token_' + payload.roomId, payload.adminToken);
         } catch (e) {}
       }
-      this.enterChatRoomUI();
+      this.enterChatRoomUI(false);
+    });
+
+    // --- FIX: room_rejoined = silent reconnect, DO NOT clear the chat DOM ---
+    PSocket.on('room_rejoined', (payload) => {
+      this.currentRoom = payload;
+      this.isAdmin = Boolean(payload.isAdmin);
+      this.adminToken = payload.adminToken || null;
+      if (this.isAdmin && this.adminToken) {
+        try {
+          sessionStorage.setItem('admin_token_' + payload.roomId, payload.adminToken);
+        } catch (e) {}
+      }
+      this.silentRejoinUI();
     });
 
     PSocket.on('history_cleared', (payload) => {
@@ -470,11 +497,13 @@ class PChatApp {
     const savedAdminToken = this.adminToken || sessionStorage.getItem('admin_token_' + this.currentRoom.id);
     const passHash = this.currentPassword ? await PCrypto.sha256(this.currentPassword) : null;
 
+    // --- FIX: Send isRejoin:true so server returns room_rejoined (silent, no DOM clear) ---
     PSocket.send('join_room', {
       roomId: this.currentRoom.id,
       passHash: passHash,
       alias: this.myAlias,
-      adminToken: savedAdminToken || null
+      adminToken: savedAdminToken || null,
+      isRejoin: true
     });
   }
 
@@ -643,38 +672,65 @@ class PChatApp {
     this.closePasswordPrompt();
   }
 
-  enterChatRoomUI() {
+  enterChatRoomUI(isSilentRejoin = false) {
     document.body.classList.add('in-chat-view');
     document.getElementById('lobbyView').classList.remove('active');
     document.getElementById('chatView').classList.add('active');
 
     document.getElementById('btnLeaveRoom').style.display = 'inline-flex';
-    
+
     // Strict Admin Button Visibility: ONLY show buttons if user is verified Admin
     const desktopAdminBtn = document.getElementById('btnDesktopAdmin');
     if (desktopAdminBtn) desktopAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
-
     const mobileAdminBtn = document.getElementById('btnMobileAdmin');
     if (mobileAdminBtn) mobileAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
 
     document.getElementById('activeRoomName').innerText = this.currentRoom.name;
     this.updateRoomBadge();
-
-    this.clearAttachment();
-    this.renderedMessageIds.clear();
-    
-    // Reset Message Stream
-    document.getElementById('messageStream').innerHTML = `
-      <div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 12px 0;">
-        🔒 256KB 微分块流式端到端加密隧道已就绪 · 服务端零内存积压 · 零写盘
-      </div>
-    `;
-
     this.startRoomCountdown();
-    this.initIcons();
 
-    // Trigger History Fetch explicitly after UI & CryptoKey are fully ready
+    if (!isSilentRejoin) {
+      // Full fresh entry: clear the DOM and start over
+      this.clearAttachment();
+      this.renderedMessageIds.clear();
+      document.getElementById('messageStream').innerHTML = `
+        <div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 12px 0;">
+          🔒 256KB 微分块流式端到端加密隧道已就绪 · 服务端零内存积压 · 零写盘
+        </div>
+      `;
+      this.initIcons();
+    }
+
+    // Trigger History Fetch after UI & CryptoKey are ready
+    // When silentRejoin: renderedMessageIds still has old IDs, so dedup prevents re-rendering existing messages
     if (this.currentRoom.enableHistory) {
+      setTimeout(() => {
+        PSocket.send('fetch_history');
+      }, 50);
+    }
+  }
+
+  // --- FIX: Silent rejoin after reconnect - keeps existing chat DOM, just re-syncs state ---
+  silentRejoinUI() {
+    // Update admin button visibility in case state changed
+    const desktopAdminBtn = document.getElementById('btnDesktopAdmin');
+    if (desktopAdminBtn) desktopAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
+    const mobileAdminBtn = document.getElementById('btnMobileAdmin');
+    if (mobileAdminBtn) mobileAdminBtn.style.display = this.isAdmin ? 'inline-flex' : 'none';
+
+    // Show a subtle "reconnected" notification in the stream without clearing it
+    const stream = document.getElementById('messageStream');
+    if (stream) {
+      const notice = document.createElement('div');
+      notice.className = 'history-divider';
+      notice.style.borderColor = 'rgba(0, 229, 255, 0.25)';
+      notice.innerHTML = `<span style="color: var(--accent-cyan); font-size: 0.72rem;">🔄 重连成功 · 正在同步最新消息...</span>`;
+      stream.appendChild(notice);
+      stream.scrollTop = stream.scrollHeight;
+    }
+
+    // Pull any messages received while disconnected (dedup via renderedMessageIds)
+    if (this.currentRoom && this.currentRoom.enableHistory) {
       setTimeout(() => {
         PSocket.send('fetch_history');
       }, 50);
